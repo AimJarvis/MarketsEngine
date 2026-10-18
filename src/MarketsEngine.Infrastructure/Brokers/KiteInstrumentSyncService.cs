@@ -1,0 +1,86 @@
+using KiteConnect;
+using MarketsEngine.Domain.Enums;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using DomainInstrument = MarketsEngine.Domain.Entities.Instrument;
+
+namespace MarketsEngine.Infrastructure.Brokers;
+
+/// <summary>
+/// Pulls Kite's NFO instrument master and upserts just the NIFTY/BANKNIFTY option contracts
+/// (nearest couple of expiries) into our own Instruments table, tagged DataSource="Kite" so
+/// mock and real instruments never mix. Read-only: never touches order placement.
+/// </summary>
+public class KiteInstrumentSyncService(
+    KiteClientFactory clientFactory,
+    MarketsEngineDbContext dbContext,
+    ILogger<KiteInstrumentSyncService> logger)
+{
+    private static readonly string[] TrackedUnderlyings = ["NIFTY", "BANKNIFTY"];
+    private const int MaxExpiriesPerUnderlying = 2;
+    private const string KiteDataSource = "Kite";
+
+    public async Task<int> SyncNiftyBankNiftyOptionsAsync(CancellationToken cancellationToken = default)
+    {
+        var kite = await clientFactory.CreateAuthenticatedClientAsync(cancellationToken);
+
+        var allNfoInstruments = kite.GetInstruments(Constants.Exchange.NFO);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        var candidates = allNfoInstruments
+            .Where(i => TrackedUnderlyings.Contains(i.Name)
+                        && (i.InstrumentType == "CE" || i.InstrumentType == "PE")
+                        && i.Expiry.HasValue
+                        && DateOnly.FromDateTime(i.Expiry.Value) >= today)
+            .ToList();
+
+        var nearestExpiriesPerUnderlying = candidates
+            .GroupBy(i => i.Name)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(i => i.Expiry!.Value).Distinct().OrderBy(d => d).Take(MaxExpiriesPerUnderlying).ToHashSet());
+
+        var toUpsert = candidates
+            .Where(i => nearestExpiriesPerUnderlying[i.Name].Contains(i.Expiry!.Value))
+            .ToList();
+
+        var existingBySymbol = await dbContext.Instruments
+            .Where(i => i.DataSource == KiteDataSource)
+            .ToDictionaryAsync(i => i.TradingSymbol, cancellationToken);
+
+        var now = DateTime.UtcNow;
+        var upsertedCount = 0;
+
+        foreach (var kiteInstrument in toUpsert)
+        {
+            if (!existingBySymbol.TryGetValue(kiteInstrument.TradingSymbol, out var instrument))
+            {
+                instrument = new DomainInstrument
+                {
+                    Id = Guid.NewGuid(),
+                    TradingSymbol = kiteInstrument.TradingSymbol,
+                    DataSource = KiteDataSource,
+                    CreatedAtUtc = now
+                };
+                dbContext.Instruments.Add(instrument);
+            }
+
+            instrument.Underlying = kiteInstrument.Name == "BANKNIFTY" ? Underlying.BankNifty : Underlying.Nifty;
+            instrument.OptionType = kiteInstrument.InstrumentType == "CE" ? OptionType.Call : OptionType.Put;
+            instrument.StrikePrice = kiteInstrument.Strike;
+            instrument.ExpiryDate = DateOnly.FromDateTime(kiteInstrument.Expiry!.Value);
+            instrument.LotSize = (int)kiteInstrument.LotSize;
+            instrument.KiteInstrumentToken = kiteInstrument.InstrumentToken;
+
+            upsertedCount++;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Synced {Count} Kite NIFTY/BANKNIFTY option instruments across {ExpiryCount} expiries",
+            upsertedCount, nearestExpiriesPerUnderlying.Values.SelectMany(x => x).Distinct().Count());
+
+        return upsertedCount;
+    }
+}

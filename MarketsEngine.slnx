@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MarketsEngine.Api/MarketsEngine.Api.csproj" />
+    <Project Path="src/MarketsEngine.Domain/MarketsEngine.Domain.csproj" />
+    <Project Path="src/MarketsEngine.Infrastructure/MarketsEngine.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MarketsEngine.Tests/MarketsEngine.Tests.csproj" />
+  </Folder>
+</Solution>
