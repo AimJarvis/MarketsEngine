@@ -1,7 +1,6 @@
 using MarketsEngine.Api.Contracts;
 using MarketsEngine.Domain.Entities;
 using MarketsEngine.Domain.Enums;
-using MarketsEngine.Domain.Trading;
 using MarketsEngine.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -10,7 +9,7 @@ namespace MarketsEngine.Api.Controllers;
 
 [ApiController]
 [Route("api/accounts")]
-public class AccountsController(MarketsEngineDbContext dbContext) : ControllerBase
+public class AccountsController(MarketsEngineDbContext dbContext, AccountPnLService pnLService) : ControllerBase
 {
     [HttpPost]
     public async Task<ActionResult<AccountResponse>> Create([FromBody] CreateAccountRequest request, CancellationToken cancellationToken)
@@ -71,7 +70,7 @@ public class AccountsController(MarketsEngineDbContext dbContext) : ControllerBa
         var responses = new List<PositionResponse>();
         foreach (var position in positions)
         {
-            var unrealizedPnL = await CalculateUnrealizedPnLAsync(position, cancellationToken);
+            var unrealizedPnL = await pnLService.CalculateUnrealizedPnLAsync(position, cancellationToken);
             responses.Add(new PositionResponse(
                 position.InstrumentId, position.Instrument!.TradingSymbol, position.NetQuantity,
                 position.AverageEntryPrice, position.RealizedPnL, unrealizedPnL, position.LastUpdatedAtUtc));
@@ -88,21 +87,9 @@ public class AccountsController(MarketsEngineDbContext dbContext) : ControllerBa
             return NotFound();
         }
 
-        var positions = await dbContext.PaperPositions
-            .Where(p => p.AccountId == id)
-            .Include(p => p.Instrument)
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
+        var (realized, unrealized, net) = await pnLService.GetTotalPnLAsync(id, cancellationToken);
 
-        var totalRealized = positions.Sum(p => p.RealizedPnL);
-        var totalUnrealized = 0m;
-
-        foreach (var position in positions.Where(p => p.NetQuantity != 0))
-        {
-            totalUnrealized += await CalculateUnrealizedPnLAsync(position, cancellationToken) ?? 0m;
-        }
-
-        return Ok(new AccountPnLResponse(id, totalRealized, totalUnrealized, totalRealized + totalUnrealized));
+        return Ok(new AccountPnLResponse(id, realized, unrealized, net));
     }
 
     [HttpGet("{id:guid}/orders")]
@@ -121,18 +108,5 @@ public class AccountsController(MarketsEngineDbContext dbContext) : ControllerBa
             .ToListAsync(cancellationToken);
 
         return Ok(orders.Select(o => o.ToResponse()));
-    }
-
-    private async Task<decimal?> CalculateUnrealizedPnLAsync(PaperPosition position, CancellationToken cancellationToken)
-    {
-        var latestQuote = await dbContext.MarketQuotes
-            .Where(q => q.InstrumentId == position.InstrumentId)
-            .OrderByDescending(q => q.QuotedAtUtc)
-            .AsNoTracking()
-            .FirstOrDefaultAsync(cancellationToken);
-
-        return latestQuote is null
-            ? null
-            : PnLCalculator.CalculateUnrealizedPnL(position.NetQuantity, position.AverageEntryPrice, latestQuote.LastTradedPrice, position.Instrument!.LotSize);
     }
 }

@@ -1,10 +1,15 @@
 using MarketsEngine.Domain.Configuration;
+using MarketsEngine.Domain.Notifications;
+using MarketsEngine.Domain.Strategies;
 using MarketsEngine.Domain.Trading;
 using MarketsEngine.Infrastructure.Brokers;
+using MarketsEngine.Infrastructure.Notifications;
 using MarketsEngine.Infrastructure.Services;
+using MarketsEngine.Infrastructure.Strategies;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace MarketsEngine.Infrastructure;
 
@@ -31,6 +36,48 @@ public static class DependencyInjection
         services.AddScoped<KiteClientFactory>();
         services.AddScoped<KiteInstrumentSyncService>();
         services.AddSingleton<KiteTickerService>();
+
+        services.AddOptions<StrategySettings>()
+            .Bind(configuration.GetSection(StrategySettings.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        services.AddKeyedSingleton<IStrategy>("SimpleMomentum", (sp, _) =>
+        {
+            var settings = sp.GetRequiredService<IOptions<StrategySettings>>().Value;
+            return new SimpleMomentumStrategy(settings.MomentumThresholdPercent);
+        });
+
+        services.AddHttpClient("KronosService", (sp, client) =>
+        {
+            var settings = sp.GetRequiredService<IOptions<StrategySettings>>().Value;
+            if (!string.IsNullOrWhiteSpace(settings.KronosServiceUrl))
+            {
+                client.BaseAddress = new Uri(settings.KronosServiceUrl);
+            }
+        });
+
+        services.AddKeyedSingleton<IStrategy>("Kronos", (sp, _) =>
+        {
+            var httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient("KronosService");
+            var settings = sp.GetRequiredService<IOptions<StrategySettings>>().Value;
+            return new KronosStrategy(httpClient, settings);
+        });
+
+        services.AddSingleton<StrategyRunnerService>();
+        services.AddHostedService(sp => sp.GetRequiredService<StrategyRunnerService>());
+
+        services.Configure<TwilioSettings>(configuration.GetSection(TwilioSettings.SectionName));
+        services.AddScoped<IWhatsAppNotifier, TwilioWhatsAppNotifier>();
+        services.AddScoped<AccountPnLService>();
+
+        services.AddOptions<PnLAlertSettings>()
+            .Bind(configuration.GetSection(PnLAlertSettings.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        services.AddSingleton<PnLAlertService>();
+        services.AddHostedService(sp => sp.GetRequiredService<PnLAlertService>());
 
         return services;
     }

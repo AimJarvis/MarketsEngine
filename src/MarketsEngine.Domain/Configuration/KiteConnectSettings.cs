@@ -11,4 +11,11 @@ public class KiteConnectSettings
 
     public string? ApiKey { get; set; }
     public string? ApiSecret { get; set; }
+
+    /// <summary>
+    /// NSE trading symbols to sync/trade as equities, e.g. ["RELIANCE", "TCS", "INFY"].
+    /// Deliberately not a fixed list in code - NSE has thousands of listed equities, so which
+    /// ones matter is a config choice, not a constant. Edit this in appsettings.json.
+    /// </summary>
+    public string[] EquityWatchlist { get; set; } = ["RELIANCE", "TCS", "INFY", "HDFCBANK"];
 }

@@ -7,7 +7,7 @@ namespace MarketsEngine.Api.Seeding;
 
 /// <summary>
 /// Dev-only convenience: applies pending migrations and seeds a handful of mock
-/// NIFTY/BANKNIFTY instruments, quotes, and a starter paper account if the database is empty.
+/// NIFTY/BANKNIFTY options, a few mock equities, and a starter paper account if empty.
 /// </summary>
 public static class MockDataSeeder
 {
@@ -23,7 +23,8 @@ public static class MockDataSeeder
 
         if (!await dbContext.Instruments.AnyAsync())
         {
-            SeedInstrumentsAndQuotes(dbContext);
+            SeedOptionInstrumentsAndQuotes(dbContext);
+            SeedEquityInstrumentsAndQuotes(dbContext);
         }
 
         if (!await dbContext.PaperAccounts.AnyAsync())
@@ -34,17 +35,17 @@ public static class MockDataSeeder
         await dbContext.SaveChangesAsync();
     }
 
-    private static void SeedInstrumentsAndQuotes(MarketsEngineDbContext dbContext)
+    private static void SeedOptionInstrumentsAndQuotes(MarketsEngineDbContext dbContext)
     {
         var now = DateTime.UtcNow;
         var expiry = DateOnly.FromDateTime(now).AddDays(14);
 
         var instruments = new[]
         {
-            CreateInstrument("NIFTY", Underlying.Nifty, OptionType.Call, 24500m, expiry, lotSize: 75, now),
-            CreateInstrument("NIFTY", Underlying.Nifty, OptionType.Put, 24500m, expiry, lotSize: 75, now),
-            CreateInstrument("BANKNIFTY", Underlying.BankNifty, OptionType.Call, 51000m, expiry, lotSize: 30, now),
-            CreateInstrument("BANKNIFTY", Underlying.BankNifty, OptionType.Put, 51000m, expiry, lotSize: 30, now)
+            CreateOptionInstrument("NIFTY", Underlying.Nifty, OptionType.Call, 24500m, expiry, lotSize: 75, now),
+            CreateOptionInstrument("NIFTY", Underlying.Nifty, OptionType.Put, 24500m, expiry, lotSize: 75, now),
+            CreateOptionInstrument("BANKNIFTY", Underlying.BankNifty, OptionType.Call, 51000m, expiry, lotSize: 30, now),
+            CreateOptionInstrument("BANKNIFTY", Underlying.BankNifty, OptionType.Put, 51000m, expiry, lotSize: 30, now)
         };
 
         dbContext.Instruments.AddRange(instruments);
@@ -57,6 +58,38 @@ public static class MockDataSeeder
             (395.00m, 399.00m, 397.00m)
         };
 
+        AddQuotes(dbContext, instruments, mockPrices, now);
+    }
+
+    private static void SeedEquityInstrumentsAndQuotes(MarketsEngineDbContext dbContext)
+    {
+        var now = DateTime.UtcNow;
+
+        var instruments = new[]
+        {
+            CreateEquityInstrument("RELIANCE", now),
+            CreateEquityInstrument("TCS", now),
+            CreateEquityInstrument("INFY", now),
+            CreateEquityInstrument("HDFCBANK", now)
+        };
+
+        dbContext.Instruments.AddRange(instruments);
+
+        var mockPrices = new (decimal Bid, decimal Ask, decimal Ltp)[]
+        {
+            (1392.00m, 1393.50m, 1392.80m),
+            (3975.00m, 3977.00m, 3976.20m),
+            (1845.00m, 1846.50m, 1845.90m),
+            (1678.00m, 1679.50m, 1678.70m)
+        };
+
+        AddQuotes(dbContext, instruments, mockPrices, now);
+    }
+
+    private static void AddQuotes(
+        MarketsEngineDbContext dbContext, Instrument[] instruments,
+        (decimal Bid, decimal Ask, decimal Ltp)[] mockPrices, DateTime now)
+    {
         for (var i = 0; i < instruments.Length; i++)
         {
             dbContext.MarketQuotes.Add(new MarketQuote
@@ -72,7 +105,7 @@ public static class MockDataSeeder
         }
     }
 
-    private static Instrument CreateInstrument(
+    private static Instrument CreateOptionInstrument(
         string underlyingSymbol, Underlying underlying, OptionType optionType,
         decimal strike, DateOnly expiry, int lotSize, DateTime now)
     {
@@ -83,6 +116,7 @@ public static class MockDataSeeder
         {
             Id = Guid.NewGuid(),
             TradingSymbol = tradingSymbol,
+            Kind = InstrumentKind.Option,
             Underlying = underlying,
             OptionType = optionType,
             StrikePrice = strike,
@@ -92,6 +126,20 @@ public static class MockDataSeeder
             CreatedAtUtc = now
         };
     }
+
+    private static Instrument CreateEquityInstrument(string tradingSymbol, DateTime now) => new()
+    {
+        Id = Guid.NewGuid(),
+        TradingSymbol = tradingSymbol,
+        Kind = InstrumentKind.Equity,
+        Underlying = null,
+        OptionType = null,
+        StrikePrice = 0m,
+        ExpiryDate = null,
+        LotSize = 1,
+        DataSource = "Mock",
+        CreatedAtUtc = now
+    };
 
     private static void SeedDefaultAccount(MarketsEngineDbContext dbContext)
     {

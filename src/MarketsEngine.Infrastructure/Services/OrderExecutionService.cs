@@ -60,7 +60,7 @@ public class OrderExecutionService(
             return await RejectAsync(request, now, "PaperTradingDisabled", "Paper trading is currently disabled by the kill switch.", cancellationToken);
         }
 
-        if (instrument.ExpiryDate < DateOnly.FromDateTime(now))
+        if (instrument.ExpiryDate is { } expiryDate && expiryDate < DateOnly.FromDateTime(now))
         {
             return await RejectAsync(request, now, "InstrumentExpired", "This instrument has expired and can no longer be traded.", cancellationToken);
         }

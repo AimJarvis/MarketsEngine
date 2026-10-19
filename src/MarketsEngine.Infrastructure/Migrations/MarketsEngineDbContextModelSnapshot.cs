@@ -109,8 +109,11 @@ namespace MarketsEngine.Infrastructure.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
-                    b.Property<DateOnly>("ExpiryDate")
+                    b.Property<DateOnly?>("ExpiryDate")
                         .HasColumnType("date");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
 
                     b.Property<long?>("KiteInstrumentToken")
                         .HasColumnType("bigint");
@@ -118,7 +121,7 @@ namespace MarketsEngine.Infrastructure.Migrations
                     b.Property<int>("LotSize")
                         .HasColumnType("integer");
 
-                    b.Property<int>("OptionType")
+                    b.Property<int?>("OptionType")
                         .HasColumnType("integer");
 
                     b.Property<decimal>("StrikePrice")
@@ -130,7 +133,7 @@ namespace MarketsEngine.Infrastructure.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
-                    b.Property<int>("Underlying")
+                    b.Property<int?>("Underlying")
                         .HasColumnType("integer");
 
                     b.HasKey("Id");

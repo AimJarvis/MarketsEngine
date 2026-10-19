@@ -88,6 +88,20 @@ public class BrokerController(
         }
     }
 
+    [HttpPost("sync-equities")]
+    public async Task<ActionResult<SyncInstrumentsResponse>> SyncEquities(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var count = await instrumentSyncService.SyncEquitiesAsync(cancellationToken);
+            return Ok(new SyncInstrumentsResponse(count));
+        }
+        catch (KiteNotConfiguredException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpPost("ticker/start")]
     public async Task<IActionResult> StartTicker(CancellationToken cancellationToken)
     {

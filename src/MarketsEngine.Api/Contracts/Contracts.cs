@@ -3,8 +3,8 @@ using MarketsEngine.Domain.Entities;
 namespace MarketsEngine.Api.Contracts;
 
 public record InstrumentResponse(
-    Guid Id, string TradingSymbol, string Underlying, string OptionType,
-    decimal StrikePrice, DateOnly ExpiryDate, int LotSize, string DataSource);
+    Guid Id, string TradingSymbol, string Kind, string? Underlying, string? OptionType,
+    decimal StrikePrice, DateOnly? ExpiryDate, int LotSize, string DataSource);
 
 public record QuoteResponse(
     Guid InstrumentId, decimal BidPrice, decimal AskPrice, decimal LastTradedPrice,
@@ -33,7 +33,7 @@ public record OrderResponse(
 public static class ResponseMapping
 {
     public static InstrumentResponse ToResponse(this Instrument i) =>
-        new(i.Id, i.TradingSymbol, i.Underlying.ToString(), i.OptionType.ToString(), i.StrikePrice, i.ExpiryDate, i.LotSize, i.DataSource);
+        new(i.Id, i.TradingSymbol, i.Kind.ToString(), i.Underlying?.ToString(), i.OptionType?.ToString(), i.StrikePrice, i.ExpiryDate, i.LotSize, i.DataSource);
 
     public static QuoteResponse ToResponse(this MarketQuote q) =>
         new(q.InstrumentId, q.BidPrice, q.AskPrice, q.LastTradedPrice, q.DataSource, q.QuotedAtUtc);
