@@ -1,13 +1,18 @@
 # MarketsEngine
 
 A local-first **paper-trading** system for Indian index options (NIFTY/BANKNIFTY) and equities,
-built on ASP.NET Core / .NET 10 + PostgreSQL. Named generically (not "OptionsPaperTrader")
-because the long-term goal is to evolve it into a real-money trading system — nothing here places
-real orders today.
+built on ASP.NET Core / .NET 10 + PostgreSQL, with an optional, explicitly-gated **real-money
+execution path** via Kite Connect. Named generically (not "OptionsPaperTrader") because the
+long-term goal was always to evolve it into a real-money trading system.
 
-**No real money, no real orders, ever — unless explicitly re-enabled later.** All trading is
-simulated against a paper account (default ₹50,000 starting capital). Kite Connect is wired up
-strictly **read-only** (login, instrument master, quotes) with no order-placement adapter.
+**Paper by default. Real money is a single config flag, off by default, with multiple safety
+layers.** `LiveTrading:Enabled = false` (the default) means every order — manual, strategy, or
+exit — is simulated against a paper account (default ₹50,000 starting capital), completely
+untouched by the live-trading code added alongside it. Setting it to `true` routes fresh orders to
+a real Kite order, but only after: the instrument is confirmed Kite-sourced (never a mock
+symbol), hard quantity/notional risk caps, a real Kite margin check, and — by default — a human
+explicitly approving each order before it ever reaches Kite. See `docs/CONFIGURATION.md` before
+touching this flag.
 
 See `docs/` for the parts that don't show up just by reading the code:
 
@@ -52,6 +57,10 @@ MarketsEngine.Tests/          xUnit tests (not actively being expanded right now
   signal and exits on take-profit/stop-loss — ✅ verified live against mock data.
 - Kite Connect integration (real NIFTY/BANKNIFTY/equity data, read-only) — built, **not yet tested
   against a real Zerodha account** (placeholder credentials only).
+- Real-money order execution via Kite (`LiveTrading:Enabled`, off by default, manual approval
+  required) — the config switch, safety guards, and strategy-runner routing are **✅ verified live**
+  (see `docs/STATUS.md`); the actual Kite `PlaceOrder`/`GetMargins` calls are **not yet tested**,
+  same real-credentials blocker as above.
 - WhatsApp P&L alerts via Twilio — pipeline verified; custom alert template submission is blocked
   on a paid Twilio account, so this is **parked** until the core trading pipeline is fully real.
 

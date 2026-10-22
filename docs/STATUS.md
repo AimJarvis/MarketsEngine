@@ -25,6 +25,22 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
   2049 on take-profit, immediately rebought at 2051). Fixed with a post-exit cooldown
   (`Strategy:CooldownMinutes`, reused) tracked per-instrument in `StrategyRunnerService`. Confirmed
   fixed by reproducing the exact scenario again, including across multiple consecutive passes.
+- **Live order execution plumbing (added 2026-10-23)** — the paper/live config switch
+  (`LiveTrading:Enabled`), the mock-instrument safety guard, and the strategy runner's gateway
+  routing were all verified live end-to-end against real HTTP calls (not just code review):
+  (1) a manual `POST /api/live-orders` with `LiveTrading:Enabled=false` correctly rejected with
+  `LiveTradingDisabled`; (2) flipping `LiveTrading:Enabled=true` via `dotnet user-secrets` took
+  effect **without restarting the app** (`IOptionsMonitor`-backed kill switch); (3) a live order
+  against a mock instrument was correctly rejected with `NonKiteInstrument` before anything could
+  reach Kite; (4) `POST /api/strategy/run-once` with `LiveTrading:Enabled=true` produced a
+  `LiveOrder` row tagged `Source: "Strategy:SimpleMomentum"` — proving `StrategyRunnerService`'s
+  entry signal really does route through `ITradingOrderGateway` to the live path when the switch
+  is on — while the paper order count stayed unchanged throughout, proving the paper engine is
+  unaffected either way. **What this does NOT verify**: no real Kite credentials exist yet, so the
+  actual `kite.PlaceOrder`/`GetMargins`/`GetOrders` calls, the manual-approval-to-real-fill
+  lifecycle, and `LiveOrderReconciliationService`'s polling have never run against the real Kite
+  API — only against the safety guards that reject before reaching it. See "Built, but not fully
+  verified" below.
 
 ## ⚠️ Built, but not fully verified
 
@@ -34,6 +50,14 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
   credentials and to **not disturb** the mock-data flow. The real `request_token → access_token`
   exchange, a live instrument sync, and live ticker ticks remain untested. Deliberately deferred by
   the user: "build everything first and then pay for subscription."
+- **Real-money order execution (`LiveTrading`)** — the gateway, safety guards, and manual-approval
+  plumbing are verified (see above), but **no real order has ever been placed with Kite** — that
+  requires the same real Kite credentials/subscription as above, plus a real `BrokerSession`
+  (login flow completed) and at least one real Kite-sourced instrument (`POST
+  /api/broker/kite/sync-instruments`/`sync-equities`). Once those exist: approve the smallest
+  possible real order yourself first (see `docs/CONFIGURATION.md`), then confirm
+  `LiveOrderReconciliationService` correctly observes the fill and updates `LivePosition`, before
+  ever letting a strategy signal reach approval unattended.
 - **Twilio WhatsApp alerts** — connectivity is confirmed (a message using Twilio's own default
   template delivered successfully). The custom dynamic-content template (`marketsengine_alert`,
   SID in `Twilio:ContentSid`) is **not yet approved** — a real alert attempt through it failed with
@@ -55,8 +79,11 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
 - **No backtesting.** Neither `SimpleMomentum` nor `Kronos` has been validated for actual
   profitability against historical data — "the strategy runs correctly" and "the strategy makes
   money" are unproven as separate claims. This has been flagged repeatedly but not requested yet.
-- **No real-money path.** By design, for now — Kite integration is read-only, no order-placement
-  adapter exists anywhere.
+- **Live order fill tracking is self-reconciled, not broker-verified.** `LivePosition` is built
+  purely from our own recorded `LiveFill`s (via the same `PositionUpdater.ApplyFill` the paper
+  engine uses) — it is never reconciled against Kite's actual positions/holdings API. This is the
+  same simplification `PaperPosition` already makes relative to real margin accounting, now
+  carried over to real money; worth revisiting before trusting `LivePosition` as ground truth.
 - **Strategy price history is in-memory only** (`StrategyRunnerService`'s internal
   `Dictionary<Guid, Queue<PricePoint>>`) — it resets on every app restart, so momentum/forecast
   context is lost across restarts. Not an issue for the mock-quote testing done so far; would

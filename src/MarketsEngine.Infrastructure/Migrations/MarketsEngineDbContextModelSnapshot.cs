@@ -151,6 +151,126 @@ namespace MarketsEngine.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveFill", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("FillPrice")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<DateTime>("FilledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("FilledQuantity")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.ToTable("LiveFills");
+                });
+
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveOrder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("BrokerOrderId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid>("InstrumentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RejectionReason")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTime>("RequestedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Side")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("SubmittedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("InstrumentId");
+
+                    b.HasIndex("RequestedAtUtc");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("LiveOrders", t =>
+                        {
+                            t.HasCheckConstraint("CK_LiveOrder_Quantity_Positive", "\"Quantity\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LivePosition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("AverageEntryPrice")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<Guid>("InstrumentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("LastUpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("NetQuantity")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("RealizedPnL")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstrumentId")
+                        .IsUnique();
+
+                    b.ToTable("LivePositions");
+                });
+
             modelBuilder.Entity("MarketsEngine.Domain.Entities.MarketQuote", b =>
                 {
                     b.Property<Guid>("Id")
@@ -353,6 +473,39 @@ namespace MarketsEngine.Infrastructure.Migrations
                     b.Navigation("Account");
                 });
 
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveFill", b =>
+                {
+                    b.HasOne("MarketsEngine.Domain.Entities.LiveOrder", "Order")
+                        .WithOne("Fill")
+                        .HasForeignKey("MarketsEngine.Domain.Entities.LiveFill", "OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
+                });
+
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveOrder", b =>
+                {
+                    b.HasOne("MarketsEngine.Domain.Entities.Instrument", "Instrument")
+                        .WithMany()
+                        .HasForeignKey("InstrumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instrument");
+                });
+
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LivePosition", b =>
+                {
+                    b.HasOne("MarketsEngine.Domain.Entities.Instrument", "Instrument")
+                        .WithMany()
+                        .HasForeignKey("InstrumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instrument");
+                });
+
             modelBuilder.Entity("MarketsEngine.Domain.Entities.MarketQuote", b =>
                 {
                     b.HasOne("MarketsEngine.Domain.Entities.Instrument", "Instrument")
@@ -411,6 +564,11 @@ namespace MarketsEngine.Infrastructure.Migrations
                     b.Navigation("Account");
 
                     b.Navigation("Instrument");
+                });
+
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveOrder", b =>
+                {
+                    b.Navigation("Fill");
                 });
 
             modelBuilder.Entity("MarketsEngine.Domain.Entities.PaperOrder", b =>

@@ -1,6 +1,7 @@
 using MarketsEngine.Domain.Configuration;
 using MarketsEngine.Domain.Entities;
 using MarketsEngine.Domain.Enums;
+using MarketsEngine.Domain.LiveTrading;
 using MarketsEngine.Domain.Strategies;
 using MarketsEngine.Domain.Trading;
 using Microsoft.EntityFrameworkCore;
@@ -12,13 +13,17 @@ using Microsoft.Extensions.Options;
 namespace MarketsEngine.Infrastructure.Strategies;
 
 /// <summary>
-/// Each pass does two independent things, both through the normal IOrderExecutionService
-/// pipeline (no special-cased order path - strategy/exit orders go through every
-/// validation/margin/ledger check a manual order would):
-/// 1. Exit check - every open position on the account is checked against the configured
+/// Each pass does two independent things:
+/// 1. Exit check - every open position (paper AND live) is checked against the configured
 ///    take-profit/stop-loss thresholds, regardless of InstrumentKindFilter or ActiveStrategy.
+///    An exit always closes in the SAME domain the position was opened in (PaperPosition closes
+///    via IOrderExecutionService, LivePosition via ILiveOrderExecutionService) - it never routes
+///    through ITradingOrderGateway, because the current LiveTrading:Enabled switch must not
+///    decide how an *existing* position gets closed (flipping the switch while an old paper
+///    position is still open must never cause its exit to fire a real Kite order).
 /// 2. Entry check - the configured IStrategy (keyed by Strategy:ActiveStrategy) is evaluated
-///    against every eligible instrument and a buy is submitted on a signal.
+///    against every eligible instrument and a buy is submitted through ITradingOrderGateway,
+///    which alone decides paper vs. live for a brand-new position based on LiveTrading:Enabled.
 /// An instrument is skipped for entry for CooldownMinutes after it was last exited, so a
 /// take-profit/stop-loss close can't be immediately undone by an entry signal reacting to the
 /// very same price move in the same pass (observed live: exit sold at a profit, then the
@@ -74,11 +79,14 @@ public class StrategyRunnerService(
         using var scope = scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<MarketsEngineDbContext>();
         var orderExecutionService = scope.ServiceProvider.GetRequiredService<IOrderExecutionService>();
+        var liveOrderExecutionService = scope.ServiceProvider.GetRequiredService<ILiveOrderExecutionService>();
+        var tradingOrderGateway = scope.ServiceProvider.GetRequiredService<ITradingOrderGateway>();
         var strategy = scope.ServiceProvider.GetRequiredKeyedService<IStrategy>(settings.ActiveStrategy);
 
         var now = DateTime.UtcNow;
 
-        await CheckExitsAsync(settings, dbContext, orderExecutionService, now, cancellationToken);
+        await CheckPaperExitsAsync(settings, dbContext, orderExecutionService, now, cancellationToken);
+        await CheckLiveExitsAsync(settings, dbContext, liveOrderExecutionService, now, cancellationToken);
 
         var today = DateOnly.FromDateTime(now);
 
@@ -148,17 +156,23 @@ public class StrategyRunnerService(
                 var cooldownBucket = RoundDownToInterval(now, settings.CooldownMinutes);
                 var idempotencyKey = $"strategy:{settings.ActiveStrategy}:{instrument.Id}:{cooldownBucket:yyyyMMddHHmm}";
 
-                var request = new SubmitOrderRequest(
+                var request = new GatewayOrderRequest(
                     settings.AccountId.Value, instrument.Id, OrderSide.Buy, TradingStyle.Intraday,
-                    settings.QuantityPerSignal, idempotencyKey);
+                    settings.QuantityPerSignal, idempotencyKey, $"Strategy:{settings.ActiveStrategy}");
 
-                var result = await orderExecutionService.SubmitOrderAsync(request, cancellationToken);
+                var result = await tradingOrderGateway.SubmitAsync(request, cancellationToken);
 
-                if (result.Success)
+                if (result.Success && !result.PendingApproval)
                 {
                     logger.LogInformation(
-                        "Strategy '{Strategy}' bought {Quantity} of {Symbol}: {Reason}",
-                        settings.ActiveStrategy, settings.QuantityPerSignal, instrument.TradingSymbol, signal.Reason);
+                        "Strategy '{Strategy}' bought {Quantity} of {Symbol} in {Mode} mode: {Reason}",
+                        settings.ActiveStrategy, settings.QuantityPerSignal, instrument.TradingSymbol, result.Mode, signal.Reason);
+                }
+                else if (result.Success && result.PendingApproval)
+                {
+                    logger.LogInformation(
+                        "Strategy '{Strategy}' signaled buy on {Symbol} - live order {OrderId} parked for manual approval",
+                        settings.ActiveStrategy, instrument.TradingSymbol, result.OrderId);
                 }
                 else
                 {
@@ -174,7 +188,7 @@ public class StrategyRunnerService(
         }
     }
 
-    private async Task CheckExitsAsync(
+    private async Task CheckPaperExitsAsync(
         StrategySettings settings, MarketsEngineDbContext dbContext, IOrderExecutionService orderExecutionService,
         DateTime now, CancellationToken cancellationToken)
     {
@@ -224,19 +238,94 @@ public class StrategyRunnerService(
                     }
 
                     logger.LogInformation(
-                        "{ExitReason} closed {Quantity} of {Symbol} via {Side}",
+                        "{ExitReason} closed {Quantity} of {Symbol} (paper) via {Side}",
                         exitReason, closingQuantity, position.Instrument.TradingSymbol, closingSide);
                 }
                 else
                 {
                     logger.LogInformation(
-                        "{ExitReason} triggered on {Symbol} but closing order was rejected: {ErrorCode} - {ErrorMessage}",
+                        "{ExitReason} triggered on {Symbol} (paper) but closing order was rejected: {ErrorCode} - {ErrorMessage}",
                         exitReason, position.Instrument.TradingSymbol, result.ErrorCode, result.ErrorMessage);
                 }
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Exit check failed for position {PositionId}", position.Id);
+                logger.LogError(ex, "Paper exit check failed for position {PositionId}", position.Id);
+            }
+        }
+    }
+
+    private async Task CheckLiveExitsAsync(
+        StrategySettings settings, MarketsEngineDbContext dbContext, ILiveOrderExecutionService liveOrderExecutionService,
+        DateTime now, CancellationToken cancellationToken)
+    {
+        var positions = await dbContext.LivePositions
+            .Where(p => p.NetQuantity != 0)
+            .Include(p => p.Instrument)
+            .ToListAsync(cancellationToken);
+
+        foreach (var position in positions)
+        {
+            try
+            {
+                var latestQuote = await dbContext.MarketQuotes
+                    .Where(q => q.InstrumentId == position.InstrumentId)
+                    .OrderByDescending(q => q.QuotedAtUtc)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (latestQuote is null)
+                {
+                    continue;
+                }
+
+                var exitReason = PositionExitEvaluator.Evaluate(
+                    position.NetQuantity, position.AverageEntryPrice, latestQuote.LastTradedPrice,
+                    position.Instrument!.LotSize, settings.TakeProfitPercent, settings.StopLossPercent);
+
+                if (exitReason == PositionExitEvaluator.ExitReason.None)
+                {
+                    continue;
+                }
+
+                var closingSide = position.NetQuantity > 0 ? OrderSide.Sell : OrderSide.Buy;
+                var closingQuantity = Math.Abs(position.NetQuantity);
+                var idempotencyKey = $"live-exit:{exitReason}:{position.InstrumentId}:{now:yyyyMMddHHmmssfff}";
+
+                var request = new SubmitLiveOrderRequest(
+                    position.InstrumentId, closingSide, closingQuantity, idempotencyKey, $"Exit:{exitReason}");
+
+                var result = await liveOrderExecutionService.SubmitOrderAsync(request, cancellationToken);
+
+                if (result.Success)
+                {
+                    lock (_historyLock)
+                    {
+                        _lastExitAtUtc[position.InstrumentId] = now;
+                    }
+
+                    if (result.PendingApproval)
+                    {
+                        logger.LogInformation(
+                            "{ExitReason} on {Symbol} (live) parked order {OrderId} for manual approval",
+                            exitReason, position.Instrument!.TradingSymbol, result.Order!.Id);
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "{ExitReason} closed {Quantity} of {Symbol} (live) via {Side}",
+                            exitReason, closingQuantity, position.Instrument!.TradingSymbol, closingSide);
+                    }
+                }
+                else
+                {
+                    logger.LogInformation(
+                        "{ExitReason} triggered on {Symbol} (live) but order was rejected: {ErrorCode} - {ErrorMessage}",
+                        exitReason, position.Instrument!.TradingSymbol, result.ErrorCode, result.ErrorMessage);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Live exit check failed for position {PositionId}", position.Id);
             }
         }
     }

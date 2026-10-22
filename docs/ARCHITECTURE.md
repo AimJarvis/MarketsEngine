@@ -28,12 +28,12 @@ pure, and testable without a database. Controllers never touch EF Core directly;
 equities. **The order execution engine needed zero changes to support equities** — it already
 treated "lot size" generically (options lot size > 1, equities lot size 1).
 
-## Order execution pipeline (`OrderExecutionService`)
+## Order execution pipeline (`OrderExecutionService`) — paper
 
-Every order — manual (via `POST /api/orders`), strategy-submitted, or an automated exit — goes
-through the **same** `IOrderExecutionService.SubmitOrderAsync` path. No special-cased order path
-exists anywhere in the codebase; this is deliberate so strategy/exit orders get every validation,
-margin check, and ledger update a manual order would.
+Every **paper** order — manual (via `POST /api/orders`), strategy-submitted, or an automated exit
+on a `PaperPosition` — goes through the **same** `IOrderExecutionService.SubmitOrderAsync` path.
+No special-cased order path exists for paper orders; this is deliberate so strategy/exit orders
+get every validation, margin check, and ledger update a manual order would.
 
 Per order: validates the instrument isn't expired (`Instrument.ExpiryDate` check, applies to mock
 and Kite-sourced instruments alike), checks quote staleness (`Trading:QuoteStalenessSeconds`),
@@ -41,20 +41,63 @@ simulates a full fill against the latest quote with configurable slippage, block
 short positions (flat `Trading:ShortOptionMarginPerLot`, not real SPAN margin), deducts/credits
 the cash ledger, updates `PaperPosition` (weighted-average entry price), and de-duplicates via a
 required idempotency key — wrapped in a DB transaction so order+fill+ledger+position update is
-all-or-nothing.
+all-or-nothing. **This path is completely untouched by live trading** — see below.
+
+## Live order execution (`LiveOrderExecutionService`) — real money, via Kite Connect
+
+A fully parallel stack to the paper engine, living in `Domain/LiveTrading/` and
+`Infrastructure/Services/LiveOrderExecutionService.cs`, added deliberately as a **separate**
+surface rather than an extension of `IOrderExecutionService` — `OrderSubmissionResult` is
+hard-wired to `PaperOrder`/`PaperFill` and `OrderStatus` only models `Filled`/`Rejected`, neither
+fits Kite's real asynchronous order lifecycle. Uses its own tables (`LiveOrder`, `LiveFill`,
+`LivePosition`) so real and simulated history can never mix.
+
+**The switch**: `ITradingOrderGateway` is the only thing entry-signal callers
+(`StrategyRunnerService`) depend on. Its implementation, `TradingOrderGateway`, reads
+`LiveTrading:Enabled` (via `IOptionsMonitor`, so a config edit takes effect on the very next order,
+no restart) and routes a fresh entry to `IOrderExecutionService` (paper, unchanged) when false, or
+`ILiveOrderExecutionService` (live) when true. `LiveTrading:Enabled` is simultaneously the paper/live
+mode switch and the real-money kill switch — distinct from `Trading:PaperTradingEnabled`.
+
+**Manual-approval lifecycle** (`LiveTrading:RequireManualApproval`, default true): a validated
+signal is persisted as `LiveOrder.Status = PendingApproval` and **Kite is never contacted** until
+a human calls `POST /api/live-orders/{id}/approve` (`LiveOrdersController`). Approval re-runs the
+kill switch and risk checks (config/state may have changed), checks real Kite margin via
+`kite.GetMargins()`, then calls `kite.PlaceOrder(...)` (market orders only, `LiveTrading:DefaultProduct`).
+`LiveOrderReconciliationService` (background service, off unless `LiveTrading:Enabled`) polls
+`kite.GetOrders()` to detect fills, records a `LiveFill`, and updates `LivePosition` via the
+**same, reused** `PositionUpdater.ApplyFill` the paper engine uses. It also auto-rejects any
+`PendingApproval` order older than `LiveTrading:PendingApprovalExpiryMinutes`.
+
+**Safety guards specific to live orders, with no paper equivalent**:
+- `Instrument.DataSource` must be `"Kite"` — a live order against a mock/fictitious instrument is
+  refused outright (`NonKiteInstrument`), since the paper engine's mock trading symbols are never
+  meant to reach a real exchange.
+- `LiveOrderRiskEvaluator` (pure, Domain) enforces `MaxQuantityPerOrder`, `MaxNotionalPerOrder`, and
+  `MaxNotionalPerDay` (summed from today's already-submitted `LiveOrder`s) — checked both when the
+  order is parked and again right before the real Kite call.
+
+**Exits are domain-locked, not mode-switched**: `StrategyRunnerService.CheckExitsAsync` closes a
+`PaperPosition` via `IOrderExecutionService` and a `LivePosition` via `ILiveOrderExecutionService`
+**directly** — never through `ITradingOrderGateway`. An existing position must always close in the
+same domain it was opened in; routing an exit through the gateway would mean flipping
+`LiveTrading:Enabled` while an old paper position is still open could fire a real Kite order for
+it. Only entries (which have no existing position yet) go through the gateway.
 
 ## Strategy runner (`StrategyRunnerService`)
 
 A `BackgroundService`, off by default (`Strategy:Enabled=false`). Each pass does two independent
-things, in order, both through `IOrderExecutionService`:
+things, in order:
 
-1. **Exit check** (`CheckExitsAsync`) — every open position on the configured account is evaluated
-   against `PositionExitEvaluator` (take-profit/stop-loss on % return of cost basis, works for
-   long and short) **regardless of `InstrumentKindFilter` or `ActiveStrategy`** — risk management
-   must never silently stop just because the entry filter changed.
+1. **Exit check** — every open `PaperPosition` and `LivePosition` is evaluated against
+   `PositionExitEvaluator` (take-profit/stop-loss on % return of cost basis, works for long and
+   short) **regardless of `InstrumentKindFilter` or `ActiveStrategy`** — risk management must never
+   silently stop just because the entry filter changed. See above for why exits close in the same
+   domain the position was opened in, not through the gateway.
 2. **Entry check** — the active `IStrategy` (resolved via keyed DI:
    `GetRequiredKeyedService<IStrategy>(settings.ActiveStrategy)`) is evaluated against every
-   eligible instrument (filtered by `Strategy:InstrumentKindFilter`); a buy is submitted on signal.
+   eligible instrument (filtered by `Strategy:InstrumentKindFilter`); a buy is submitted via
+   `ITradingOrderGateway` on signal — paper or live, decided entirely by `LiveTrading:Enabled`.
 
 An instrument is skipped for entry for `Strategy:CooldownMinutes` after it was last exited — this
 exists because of a real bug found via live testing: a take-profit exit and a momentum entry
@@ -94,7 +137,10 @@ the official `Tech.Zerodha.KiteConnect` NuGet package's own `Kite`/`Instrument`/
 - `KiteTickerService` — singleton WebSocket ticker, replaces (not appends) the latest
   `MarketQuote` per tick, same pattern as the mock quote refresher.
 
-**No order-placement endpoint or adapter exists anywhere in this integration, by design.**
+**No order-placement endpoint or adapter exists in `BrokerController`/`Brokers/`, by design** — real
+order placement lives entirely in the separate live-trading stack above (`LiveOrderExecutionService`,
+`LiveOrdersController`), which happens to depend on this folder's `KiteClientFactory` for an
+authenticated client, same as `KiteInstrumentSyncService` does.
 
 ## Notifications (Twilio WhatsApp)
 
@@ -117,6 +163,7 @@ outside that window.
 | `GET /api/broker/kite/login-url`, `GET /api/broker/kite/callback`, `GET /api/broker/kite/status`, `POST /api/broker/kite/sync-instruments`, `POST /api/broker/kite/sync-equities`, `POST /api/broker/kite/ticker/start`, `POST /api/broker/kite/ticker/stop` | `BrokerController` | Kite Connect auth, instrument/equity sync, ticker control — **no order endpoint** |
 | `GET /api/strategy/status`, `POST /api/strategy/run-once` | `StrategyController` | Inspect/manually trigger the strategy runner |
 | `POST /api/notifications/test`, `POST /api/notifications/pnl-check-once` | `NotificationsController` | Manually test WhatsApp alerts |
+| `POST /api/live-orders`, `GET /api/live-orders`, `GET /api/live-orders/{id}`, `POST /api/live-orders/{id}/approve`, `POST /api/live-orders/{id}/reject`, `GET /api/live-orders/positions` | `LiveOrdersController` | Real-money order submission/approval workflow — the only place a real Kite order can originate |
 
 ## Background services
 
@@ -128,3 +175,4 @@ is both hosted by the runtime and directly injectable (e.g. `StrategyController`
 - `KiteTickerService` — live tick ingestion when Kite is configured and started.
 - `StrategyRunnerService` — entry/exit automation loop, off by default.
 - `PnLAlertService` — WhatsApp P&L alert loop, off by default.
+- `LiveOrderReconciliationService` — polls Kite for real order fills and expires stale pending approvals, off unless `LiveTrading:Enabled`.

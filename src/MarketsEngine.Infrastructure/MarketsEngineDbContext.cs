@@ -13,6 +13,9 @@ public class MarketsEngineDbContext(DbContextOptions<MarketsEngineDbContext> opt
     public DbSet<PaperPosition> PaperPositions => Set<PaperPosition>();
     public DbSet<CashLedgerEntry> CashLedgerEntries => Set<CashLedgerEntry>();
     public DbSet<BrokerSession> BrokerSessions => Set<BrokerSession>();
+    public DbSet<LiveOrder> LiveOrders => Set<LiveOrder>();
+    public DbSet<LiveFill> LiveFills => Set<LiveFill>();
+    public DbSet<LivePosition> LivePositions => Set<LivePosition>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

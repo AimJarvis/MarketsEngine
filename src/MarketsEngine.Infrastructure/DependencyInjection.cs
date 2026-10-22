@@ -1,4 +1,5 @@
 using MarketsEngine.Domain.Configuration;
+using MarketsEngine.Domain.LiveTrading;
 using MarketsEngine.Domain.Notifications;
 using MarketsEngine.Domain.Strategies;
 using MarketsEngine.Domain.Trading;
@@ -36,6 +37,17 @@ public static class DependencyInjection
         services.AddScoped<KiteClientFactory>();
         services.AddScoped<KiteInstrumentSyncService>();
         services.AddSingleton<KiteTickerService>();
+
+        services.AddOptions<LiveTradingSettings>()
+            .Bind(configuration.GetSection(LiveTradingSettings.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        services.AddScoped<ILiveOrderExecutionService, LiveOrderExecutionService>();
+        services.AddScoped<ITradingOrderGateway, TradingOrderGateway>();
+
+        services.AddSingleton<LiveOrderReconciliationService>();
+        services.AddHostedService(sp => sp.GetRequiredService<LiveOrderReconciliationService>());
 
         services.AddOptions<StrategySettings>()
             .Bind(configuration.GetSection(StrategySettings.SectionName))

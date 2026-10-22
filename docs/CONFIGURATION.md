@@ -77,6 +77,38 @@ Controls which symbols `POST /api/broker/kite/sync-equities` pulls. NIFTY/BANKNI
 }
 ```
 
+### `LiveTrading` — real money, read this before touching it
+
+```json
+"LiveTrading": {
+  "Enabled": false,                  // THE real-money kill switch AND the paper/live mode switch
+  "RequireManualApproval": true,     // false = strategy signals place real orders with no human step
+  "DefaultProduct": "MIS",           // "MIS" | "NRML" — passed straight to Kite's PlaceOrder
+  "MaxQuantityPerOrder": 1,          // in lots, same unit as Strategy:QuantityPerSignal
+  "MaxNotionalPerOrder": 10000,      // ₹, rejected before Kite is ever contacted
+  "MaxNotionalPerDay": 25000,        // ₹, summed across today's already-submitted live orders
+  "ReconciliationIntervalSeconds": 15,
+  "PendingApprovalExpiryMinutes": 30 // a stale pending approval auto-rejects rather than firing on an old price
+}
+```
+
+**`LiveTrading:Enabled` is the single switch between paper and real money.** When `false` (the
+default), `ITradingOrderGateway` routes every order through the existing, unchanged paper engine —
+nothing about this feature can affect paper trading while it's off. When `true`, fresh entry/exit
+signals route to `LiveOrderExecutionService` and can place real orders with Kite, subject to:
+
+- The instrument must be Kite-sourced (`Instrument.DataSource == "Kite"`) — a mock instrument is
+  always refused, so flipping this on against seeded mock data is safe by construction.
+- `RequireManualApproval` (default `true`): nothing reaches Kite until you call
+  `POST /api/live-orders/{id}/approve`. List pending ones with `GET /api/live-orders?status=PendingApproval`.
+- The `MaxQuantityPerOrder`/`MaxNotionalPerOrder`/`MaxNotionalPerDay` caps, checked twice (at
+  signal time and again right before the real Kite call).
+- A real `kite.GetMargins()` check for sufficient cash before a buy is placed.
+
+**Before ever setting this to `true` against a real account: start with the smallest possible
+order (e.g. 1 share of a cheap, liquid stock) and approve it yourself manually — do not let a
+strategy's first-ever live approval be unattended.** See `docs/STATUS.md` for current status.
+
 ## Turning automation on (local testing)
 
 1. Create or pick a `PaperAccount` (`POST /api/accounts`, note the returned id).
@@ -88,5 +120,8 @@ Controls which symbols `POST /api/broker/kite/sync-equities` pulls. NIFTY/BANKNI
    `Strategy:KronosServiceUrl`.
 6. To also get WhatsApp alerts, set `PnLAlerts:Enabled = true` and add the account id to
    `PnLAlerts:AccountIds`.
+7. Real money is a separate, additional opt-in on top of all of the above — see `LiveTrading`
+   above. Leaving `LiveTrading:Enabled = false` (the default) means steps 1–6 only ever touch the
+   paper engine, regardless of how real your Kite-sourced market data is.
 
 Everything defaults to **off** — nothing trades or alerts automatically out of the box.
