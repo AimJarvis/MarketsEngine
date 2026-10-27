@@ -92,6 +92,32 @@ public class LiveOrdersController(ILiveOrderExecutionService liveOrderExecutionS
             : UnprocessableEntity(new { errorCode = result.ErrorCode, message = result.ErrorMessage });
     }
 
+    [HttpPost("{id:guid}/cancel")]
+    public async Task<IActionResult> Cancel(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await liveOrderExecutionService.CancelAsync(id, cancellationToken);
+
+        if (result.Success && result.Order is not null)
+            return Ok(result.Order.ToResponse());
+
+        return result.ErrorCode == "OrderNotFound"
+            ? NotFound(new { errorCode = result.ErrorCode, message = result.ErrorMessage })
+            : UnprocessableEntity(new { errorCode = result.ErrorCode, message = result.ErrorMessage });
+    }
+
+    [HttpPost("{id:guid}/modify")]
+    public async Task<IActionResult> Modify(Guid id, [FromBody] ModifyLiveOrderApiRequest request, CancellationToken cancellationToken)
+    {
+        var result = await liveOrderExecutionService.ModifyAsync(id, request.Quantity, cancellationToken);
+
+        if (result.Success && result.Order is not null)
+            return Ok(result.Order.ToResponse());
+
+        return result.ErrorCode == "OrderNotFound"
+            ? NotFound(new { errorCode = result.ErrorCode, message = result.ErrorMessage })
+            : UnprocessableEntity(new { errorCode = result.ErrorCode, message = result.ErrorMessage });
+    }
+
     [HttpGet("positions")]
     public async Task<ActionResult<List<LivePositionResponse>>> GetPositions(CancellationToken cancellationToken)
     {

@@ -6,5 +6,7 @@ public record KiteCallbackResponse(bool Success, string? BrokerUserId, DateTime 
 
 public record SyncInstrumentsResponse(int InstrumentsSynced);
 
+public record ImportHistoricalDataResponse(int BarsImported);
+
 public record BrokerStatusResponse(
     bool IsAuthenticated, string? BrokerUserId, DateTime? SessionGeneratedAtUtc, bool IsTickerConnected);

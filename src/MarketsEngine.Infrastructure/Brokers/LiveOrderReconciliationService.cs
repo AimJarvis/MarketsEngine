@@ -1,8 +1,5 @@
-using KiteConnect;
 using MarketsEngine.Domain.Configuration;
-using MarketsEngine.Domain.Entities;
 using MarketsEngine.Domain.Enums;
-using MarketsEngine.Domain.Trading;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,6 +13,12 @@ namespace MarketsEngine.Infrastructure.Brokers;
 /// terminal state yet, since Kite's PlaceOrder returns an order id immediately but the order
 /// itself fills asynchronously. Also expires stale PendingApproval orders so an approval can
 /// never fire against a long-stale price. Off unless LiveTrading:Enabled.
+///
+/// This is the guaranteed fallback - KiteTickerService additionally applies the same updates
+/// instantly via Kite's push-based Ticker.OnOrderUpdate event when the ticker is running, but the
+/// ticker is manually started/stopped and isn't always on, so this poll is what guarantees order
+/// status is never permanently stuck even if the ticker was never started. Both paths call the
+/// same LiveOrderReconciler.ApplyUpdateAsync and are idempotent against each other.
 /// </summary>
 public class LiveOrderReconciliationService(
     IServiceScopeFactory scopeFactory,
@@ -90,6 +93,7 @@ public class LiveOrderReconciliationService(
     {
         var openOrders = await dbContext.LiveOrders
             .Include(o => o.Instrument)
+            .Include(o => o.Fill)
             .Where(o => o.Status == LiveOrderStatus.Submitted || o.Status == LiveOrderStatus.Open || o.Status == LiveOrderStatus.PartiallyFilled)
             .ToListAsync(cancellationToken);
 
@@ -108,71 +112,9 @@ public class LiveOrderReconciliationService(
                 continue;
             }
 
-            var newStatus = MapStatus(brokerOrder.Status);
-            if (newStatus == order.Status)
-            {
-                continue;
-            }
-
-            var wasAlreadyFilled = order.Fill is not null;
-            order.Status = newStatus;
-
-            if (newStatus == LiveOrderStatus.Complete && !wasAlreadyFilled)
-            {
-                await RecordFillAsync(dbContext, order, brokerOrder, now, cancellationToken);
-            }
-            else if (newStatus is LiveOrderStatus.Cancelled)
-            {
-                order.RejectionReason = brokerOrder.StatusMessage;
-            }
-
-            logger.LogInformation("Live order {OrderId} ({BrokerOrderId}) status updated to {Status}", order.Id, order.BrokerOrderId, newStatus);
+            await LiveOrderReconciler.ApplyUpdateAsync(dbContext, order, brokerOrder, now, logger, cancellationToken);
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
     }
-
-    private static async Task RecordFillAsync(
-        MarketsEngineDbContext dbContext, LiveOrder order, Order brokerOrder, DateTime now, CancellationToken cancellationToken)
-    {
-        var fill = new LiveFill
-        {
-            Id = Guid.NewGuid(),
-            OrderId = order.Id,
-            FilledQuantity = (int)brokerOrder.FilledQuantity,
-            FillPrice = brokerOrder.AveragePrice,
-            FilledAtUtc = now
-        };
-
-        dbContext.LiveFills.Add(fill);
-
-        var position = await dbContext.LivePositions
-            .FirstOrDefaultAsync(p => p.InstrumentId == order.InstrumentId, cancellationToken);
-
-        var lotSize = order.Instrument?.LotSize ?? 1;
-        var currentNetQuantity = position?.NetQuantity ?? 0;
-        var currentAveragePrice = position?.AverageEntryPrice ?? 0m;
-
-        var lots = order.Quantity;
-        var update = PositionUpdater.ApplyFill(currentNetQuantity, currentAveragePrice, order.Side, lots, fill.FillPrice, lotSize);
-
-        if (position is null)
-        {
-            position = new LivePosition { Id = Guid.NewGuid(), InstrumentId = order.InstrumentId };
-            dbContext.LivePositions.Add(position);
-        }
-
-        position.NetQuantity = update.NewNetQuantity;
-        position.AverageEntryPrice = update.NewAverageEntryPrice;
-        position.RealizedPnL += update.RealizedPnLDelta;
-        position.LastUpdatedAtUtc = now;
-    }
-
-    private static LiveOrderStatus MapStatus(string kiteStatus) => kiteStatus switch
-    {
-        Constants.OrderStatus.Complete => LiveOrderStatus.Complete,
-        Constants.OrderStatus.Cancelled => LiveOrderStatus.Cancelled,
-        Constants.OrderStatus.Rejected => LiveOrderStatus.Failed,
-        _ => LiveOrderStatus.Open
-    };
 }

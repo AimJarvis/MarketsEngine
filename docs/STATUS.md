@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-23. This file exists so a future session (or a lost-context recovery) can
+Last updated: 2026-10-28 (backtesting added). This file exists so a future session (or a lost-context recovery) can
 tell quickly what's actually been proven to work versus what's built but unverified versus what's
 a known, explicit gap. Update it whenever a major piece changes state — don't let it go stale.
 
@@ -42,6 +42,51 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
   API — only against the safety guards that reject before reaching it. See "Built, but not fully
   verified" below.
 
+- **API authentication (added 2026-10-28)** — every endpoint except `/health` now requires an
+  `X-Api-Key` header, checked via fixed-time comparison against `Auth:ApiKey` (required, validated
+  at startup, no default — the app refuses to boot without it configured). Verified live: no
+  header → 401, wrong key → 401, correct key → 200, `/health` → 200 with no key, and Swagger's own
+  `swagger.json` correctly advertises the `ApiKey` security scheme globally (Swagger UI gets an
+  Authorize button). Full regression across accounts/orders/strategy/broker endpoints confirmed
+  working with the header present.
+- **Cancel a live order with the broker (added 2026-10-28)** — `POST
+  /api/live-orders/{id}/cancel` calls `kite.CancelOrder`, valid only for `Submitted`/`Open`/
+  `PartiallyFilled` orders (a `PendingApproval` order should use `/reject` instead, which never
+  touches Kite). Verified: a non-existent order → 404, cancelling an already-`Rejected` order →
+  `InvalidState` with a clear message directing to `/reject`. **Not yet verified**: an actual
+  cancel against a real in-flight Kite order (needs real credentials, same blocker as everything
+  else live).
+- **Modify a live order's quantity (added 2026-10-28)** — `POST /api/live-orders/{id}/modify`
+  calls `kite.ModifyOrder`, same state gate as cancel, re-validates `LiveOrderRiskEvaluator`
+  against the new quantity before touching Kite. **Quantity only** — not price or order type,
+  since market orders have no price and other order types are out of v1 scope. Verified:
+  non-existent order → 404, invalid quantity → rejected, wrong-state order → `InvalidState`. **Not
+  yet verified**: an actual modify against a real in-flight Kite order (same real-credentials
+  blocker).
+- **Push-based order status updates (added 2026-10-28)** — `KiteTickerService` now also wires
+  `Ticker.OnOrderUpdate` (the same WebSocket already used for market data) and applies updates
+  instantly via a new shared `LiveOrderReconciler`, extracted from `LiveOrderReconciliationService`
+  so the exact same status-mapping/fill-recording logic runs whether it's reached by push or by
+  the existing poll — the poll remains as a guaranteed fallback for whenever the ticker isn't
+  running (it's started/stopped manually, not automatic). Verified: build + existing 18 tests pass
+  unchanged after the extraction, proving the refactor didn't alter behavior. **Not yet verified**:
+  an actual real-time push from Kite (needs real credentials + the ticker actually running against
+  a live order).
+- **Backtesting engine (added 2026-10-28) — verified by hand-computed proof, not just a smoke
+  test.** Seeded a synthetic 8-day price path directly into `HistoricalBars` (flat, flat, flat, up
+  3%, up further, flat, down hard, flat) and ran `POST /api/backtests` with `SimpleMomentum`
+  against it. Every number in the response matched a hand calculation exactly: 2 trades (one
+  `TakeProfit` exit, one `StopLoss` exit), each trade's `RealizedPnL` net of accumulated fees,
+  `TotalRealizedPnL`/`TotalFeesPaid`/`FinalEquity` all reconciling to the cent. Critically, **the
+  same-bar re-entry protection was proven, not assumed**: on both exit bars, the momentum
+  conditions that followed would otherwise have fired a fresh buy signal on the same bar — the
+  engine correctly skipped entry on those bars, confirmed by the trade count being exactly 2, not
+  4. Negative paths also verified: an instrument with no imported bars → clear error, not a crash;
+  an unknown `strategyName` → clear error. **What this does NOT verify**: the actual Kite
+  `GetHistoricalData` import call (`POST /api/broker/kite/import-historical`) — same
+  real-credentials blocker as everything else live. The replay engine itself has no such blocker
+  and is fully proven correct independent of it.
+
 ## ⚠️ Built, but not fully verified
 
 - **Kite Connect real market data** — `Kite:ApiKey`/`Kite:ApiSecret` are still placeholder values.
@@ -50,6 +95,11 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
   credentials and to **not disturb** the mock-data flow. The real `request_token → access_token`
   exchange, a live instrument sync, and live ticker ticks remain untested. Deliberately deferred by
   the user: "build everything first and then pay for subscription."
+- **Historical data import (`KiteHistoricalDataService`)** — verified to fail cleanly (e.g. a clear
+  "sync the instrument first" error when `KiteInstrumentToken` is missing). The actual
+  `kite.GetHistoricalData()` call has never run — same real-credentials blocker as above. Until
+  real data is imported, the backtest engine (verified separately, see above) has nothing real to
+  replay beyond hand-seeded synthetic test data.
 - **Real-money order execution (`LiveTrading`)** — the gateway, safety guards, and manual-approval
   plumbing are verified (see above), but **no real order has ever been placed with Kite** — that
   requires the same real Kite credentials/subscription as above, plus a real `BrokerSession`
@@ -76,9 +126,6 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
 
 ## ❌ Explicit, known gaps (not started)
 
-- **No backtesting.** Neither `SimpleMomentum` nor `Kronos` has been validated for actual
-  profitability against historical data — "the strategy runs correctly" and "the strategy makes
-  money" are unproven as separate claims. This has been flagged repeatedly but not requested yet.
 - **Live order fill tracking is self-reconciled, not broker-verified.** `LivePosition` is built
   purely from our own recorded `LiveFill`s (via the same `PositionUpdater.ApplyFill` the paper
   engine uses) — it is never reconciled against Kite's actual positions/holdings API. This is the

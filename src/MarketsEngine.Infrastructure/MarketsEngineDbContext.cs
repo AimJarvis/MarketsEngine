@@ -16,6 +16,7 @@ public class MarketsEngineDbContext(DbContextOptions<MarketsEngineDbContext> opt
     public DbSet<LiveOrder> LiveOrders => Set<LiveOrder>();
     public DbSet<LiveFill> LiveFills => Set<LiveFill>();
     public DbSet<LivePosition> LivePositions => Set<LivePosition>();
+    public DbSet<HistoricalBar> HistoricalBars => Set<HistoricalBar>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

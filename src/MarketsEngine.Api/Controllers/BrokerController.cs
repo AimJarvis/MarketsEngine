@@ -15,7 +15,8 @@ public class BrokerController(
     KiteClientFactory clientFactory,
     KiteSessionStore sessionStore,
     KiteInstrumentSyncService instrumentSyncService,
-    KiteTickerService tickerService) : ControllerBase
+    KiteTickerService tickerService,
+    KiteHistoricalDataService historicalDataService) : ControllerBase
 {
     [HttpGet("login-url")]
     public ActionResult<LoginUrlResponse> GetLoginUrl()
@@ -125,5 +126,24 @@ public class BrokerController(
     {
         tickerService.Stop();
         return Ok(new { message = "Kite ticker stopped." });
+    }
+
+    [HttpPost("import-historical")]
+    public async Task<ActionResult<ImportHistoricalDataResponse>> ImportHistorical(
+        [FromBody] ImportHistoricalDataApiRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var count = await historicalDataService.ImportHistoricalDataAsync(request.InstrumentId, request.From, request.To, cancellationToken);
+            return Ok(new ImportHistoricalDataResponse(count));
+        }
+        catch (KiteNotConfiguredException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

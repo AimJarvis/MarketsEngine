@@ -6,6 +6,8 @@ public record SubmitLiveOrderApiRequest(Guid InstrumentId, string Side, int Quan
 
 public record RejectLiveOrderApiRequest(string Reason);
 
+public record ModifyLiveOrderApiRequest(int Quantity);
+
 public record LiveFillResponse(int FilledQuantity, decimal FillPrice, DateTime FilledAtUtc);
 
 public record LiveOrderResponse(

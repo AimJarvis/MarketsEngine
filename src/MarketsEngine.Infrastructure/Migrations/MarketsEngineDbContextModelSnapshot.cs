@@ -95,6 +95,50 @@ namespace MarketsEngine.Infrastructure.Migrations
                     b.ToTable("CashLedgerEntries");
                 });
 
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.HistoricalBar", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Close")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal>("High")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<Guid>("InstrumentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Interval")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<decimal>("Low")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal>("Open")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<DateTime>("TimestampUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Volume")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstrumentId", "TimestampUtc", "Interval")
+                        .IsUnique();
+
+                    b.ToTable("HistoricalBars");
+                });
+
             modelBuilder.Entity("MarketsEngine.Domain.Entities.Instrument", b =>
                 {
                     b.Property<Guid>("Id")
@@ -471,6 +515,17 @@ namespace MarketsEngine.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Account");
+                });
+
+            modelBuilder.Entity("MarketsEngine.Domain.Entities.HistoricalBar", b =>
+                {
+                    b.HasOne("MarketsEngine.Domain.Entities.Instrument", "Instrument")
+                        .WithMany()
+                        .HasForeignKey("InstrumentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Instrument");
                 });
 
             modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveFill", b =>

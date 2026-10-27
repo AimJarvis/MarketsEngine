@@ -12,6 +12,11 @@ namespace MarketsEngine.Infrastructure.Brokers;
 /// the mock quote refresher behaves). Read-only market data - never touches order placement.
 /// Registered as a singleton since Connect() manages its own background connection; a scope
 /// is opened per DB access since DbContext itself is scoped.
+///
+/// Also applies real-time order status updates pushed on this same WebSocket connection
+/// (Ticker.OnOrderUpdate) to any matching LiveOrder, via the shared LiveOrderReconciler - this
+/// is the low-latency path; LiveOrderReconciliationService's periodic poll is the guaranteed
+/// fallback for whenever this ticker isn't running (it's started/stopped manually).
 /// </summary>
 public class KiteTickerService(IServiceScopeFactory scopeFactory, ILogger<KiteTickerService> logger) : IDisposable
 {
@@ -44,6 +49,7 @@ public class KiteTickerService(IServiceScopeFactory scopeFactory, ILogger<KiteTi
 
         _ticker = new Ticker(clientFactory.ApiKey, session.AccessToken, Reconnect: true, ReconnectInterval: 5, ReconnectTries: 50);
         _ticker.OnTick += OnTick;
+        _ticker.OnOrderUpdate += OnOrderUpdate;
         _ticker.OnError += message => logger.LogWarning("Kite ticker error: {Message}", message);
         _ticker.OnClose += () => logger.LogInformation("Kite ticker closed");
         _ticker.OnConnect += () => logger.LogInformation("Kite ticker connected");
@@ -65,6 +71,7 @@ public class KiteTickerService(IServiceScopeFactory scopeFactory, ILogger<KiteTi
         }
 
         _ticker.OnTick -= OnTick;
+        _ticker.OnOrderUpdate -= OnOrderUpdate;
         _ticker.Close();
         _ticker = null;
     }
@@ -72,6 +79,37 @@ public class KiteTickerService(IServiceScopeFactory scopeFactory, ILogger<KiteTi
     private void OnTick(Tick tick)
     {
         _ = UpdateQuoteAsync(tick);
+    }
+
+    private void OnOrderUpdate(Order orderData)
+    {
+        _ = HandleOrderUpdateAsync(orderData);
+    }
+
+    private async Task HandleOrderUpdateAsync(Order orderData)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<MarketsEngineDbContext>();
+
+            var order = await dbContext.LiveOrders
+                .Include(o => o.Instrument)
+                .Include(o => o.Fill)
+                .FirstOrDefaultAsync(o => o.BrokerOrderId == orderData.OrderId);
+
+            if (order is null)
+            {
+                return;
+            }
+
+            await LiveOrderReconciler.ApplyUpdateAsync(dbContext, order, orderData, DateTime.UtcNow, logger);
+            await dbContext.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to process Kite order update for broker order {BrokerOrderId}", orderData.OrderId);
+        }
     }
 
     private async Task UpdateQuoteAsync(Tick tick)

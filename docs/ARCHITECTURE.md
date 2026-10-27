@@ -18,6 +18,17 @@ MarketsEngine.Domain          → entities, enums, pure calculators, strategy ab
 pure, and testable without a database. Controllers never touch EF Core directly; they call into
 `Infrastructure` services.
 
+## API authentication
+
+Every endpoint requires an `X-Api-Key` header (checked against `Auth:ApiKey`, fixed-time compared
+in `MarketsEngine.Api/Auth/ApiKeyAuthenticationHandler.cs`) except `GET /health`
+(`.AllowAnonymous()`). Wired as ASP.NET Core's standard `AddAuthentication` +
+`AddAuthorization(options => options.FallbackPolicy = RequireAuthenticatedUser())` pattern in
+`Program.cs` — a global default rather than per-controller `[Authorize]` attributes, so a new
+controller is protected automatically without remembering to annotate it. `Auth:ApiKey` is
+required and validated at startup (same fail-fast pattern as `ConnectionStrings:Postgres`); the
+app will not boot without it set.
+
 ## Core entities
 
 `Instrument`, `MarketQuote`, `PaperAccount`, `PaperOrder`, `PaperFill`, `PaperPosition`,
@@ -64,10 +75,25 @@ signal is persisted as `LiveOrder.Status = PendingApproval` and **Kite is never 
 a human calls `POST /api/live-orders/{id}/approve` (`LiveOrdersController`). Approval re-runs the
 kill switch and risk checks (config/state may have changed), checks real Kite margin via
 `kite.GetMargins()`, then calls `kite.PlaceOrder(...)` (market orders only, `LiveTrading:DefaultProduct`).
+Status updates after that reach the system two ways, both applying the exact same logic via a
+shared `LiveOrderReconciler.ApplyUpdateAsync` (`Infrastructure/Brokers/LiveOrderReconciler.cs`):
 `LiveOrderReconciliationService` (background service, off unless `LiveTrading:Enabled`) polls
-`kite.GetOrders()` to detect fills, records a `LiveFill`, and updates `LivePosition` via the
-**same, reused** `PositionUpdater.ApplyFill` the paper engine uses. It also auto-rejects any
-`PendingApproval` order older than `LiveTrading:PendingApprovalExpiryMinutes`.
+`kite.GetOrders()` as a guaranteed fallback, and `KiteTickerService` additionally wires Kite's
+`Ticker.OnOrderUpdate` push event (same WebSocket connection already used for market data) for
+near-instant updates whenever the ticker happens to be running (it's started/stopped manually via
+`POST /api/broker/kite/ticker/start`, not automatically). Either path records a `LiveFill` and
+updates `LivePosition` via the **same, reused** `PositionUpdater.ApplyFill` the paper engine uses,
+and both are idempotent against each other (a status that hasn't changed is a no-op), so having
+both active is safe, not a race. The poller also auto-rejects any `PendingApproval` order older
+than `LiveTrading:PendingApprovalExpiryMinutes`.
+
+`POST /api/live-orders/{id}/cancel` pulls an already-placed order back from Kite
+(`kite.CancelOrder`) — valid only for `Submitted`/`Open`/`PartiallyFilled` orders; a
+`PendingApproval` order never reached Kite in the first place, so `/reject` is the right call for
+that instead. `POST /api/live-orders/{id}/modify` (`kite.ModifyOrder`) changes an order's
+**quantity only** — same state gate as cancel, and re-runs `LiveOrderRiskEvaluator` against the
+new quantity before touching Kite. Scoped to quantity deliberately: a market order has no price to
+modify, and widening to other order types is outside this project's "market orders only" v1 scope.
 
 **Safety guards specific to live orders, with no paper equivalent**:
 - `Instrument.DataSource` must be `"Kite"` — a live order against a mock/fictitious instrument is
@@ -136,11 +162,48 @@ the official `Tech.Zerodha.KiteConnect` NuGet package's own `Kite`/`Instrument`/
   existing `Instruments` table tagged `DataSource="Kite"`.
 - `KiteTickerService` — singleton WebSocket ticker, replaces (not appends) the latest
   `MarketQuote` per tick, same pattern as the mock quote refresher.
+- `KiteHistoricalDataService` — `ImportHistoricalDataAsync(instrumentId, from, to)` calls
+  `kite.GetHistoricalData(..., Interval: "day")`, upserts into `HistoricalBar` (own table, keyed by
+  instrument+timestamp+interval) for the backtest engine below to replay. Requires the instrument
+  already synced (has a `KiteInstrumentToken`) and a completed Kite login — same requirement as
+  everything else in this folder.
 
 **No order-placement endpoint or adapter exists in `BrokerController`/`Brokers/`, by design** — real
 order placement lives entirely in the separate live-trading stack above (`LiveOrderExecutionService`,
 `LiveOrdersController`), which happens to depend on this folder's `KiteClientFactory` for an
 authenticated client, same as `KiteInstrumentSyncService` does.
+
+## Backtesting (`Domain/Backtesting/`, `BacktestRunnerService`)
+
+Answers the question nothing else in this app answers: would `SimpleMomentum`/`Kronos` + the exit
+logic actually have made money? Entirely separate from paper/live trading — never places an order
+anywhere, reads only `HistoricalBar` rows imported via `KiteHistoricalDataService` above.
+
+`BacktestEngine.RunAsync` (pure, Domain, no DB/HTTP dependency of its own — bars and an `IStrategy`
+are passed in as plain arguments, so it's directly unit-testable) replays bars in ascending time
+order through **the exact same pure calculators** the paper/live engines use:
+`PositionExitEvaluator` for exits, `PositionUpdater.ApplyFill` for position/average-price math,
+`PnLCalculator` for unrealized P&L and the equity curve. Per bar: exit check first (if a position
+is open), then entry check (`await strategy.EvaluateAsync(...)` — real async, since a `Kronos`
+backtest makes one real HTTP call per bar and needs the Kronos service running; `SimpleMomentum`
+has no such dependency). Fills happen exactly at `bar.Close` — historical OHLC data has no bid/ask
+spread to simulate slippage against, a deliberate, documented simplification that makes backtest
+results somewhat optimistic versus live trading. Re-entry on the exact bar an exit just fired is
+skipped — the simplest possible bar-level translation of the same `CooldownMinutes` fix that
+closed the live re-entry race found earlier in this project.
+
+A trade record spans one full flat→open→flat cycle (clean because strategies only ever signal buy
+and exits always close the full quantity) — `EntryPrice` is the average entry price right before
+closing, `RealizedPnL` is net of every fee paid across the cycle (entry + exit), not gross.
+
+`BacktestRunnerService` (Infrastructure) loads bars for one instrument/date range, resolves the
+strategy — `SimpleMomentum` is constructed fresh per request (so different thresholds can be
+tried without touching live `Strategy:*` config); `Kronos` is resolved via the existing keyed DI
+registration, so its forecast parameters follow whatever `Strategy:Kronos*` is currently
+configured, not per-request — and calls `BacktestEngine.RunAsync`. `POST /api/backtests`
+(`BacktestController`) runs this synchronously and returns the full result: trade-by-trade list
+plus summary (total realized P&L, fees, win rate, max drawdown, final equity, any still-open
+position, reported honestly rather than force-closed).
 
 ## Notifications (Twilio WhatsApp)
 
@@ -160,10 +223,13 @@ outside that window.
 | `GET /api/instruments`, `GET /api/instruments/{id}/quote` | `InstrumentsController` | List instruments / latest quote |
 | `POST /api/accounts`, `GET /api/accounts/{id}`, `GET /api/accounts/{id}/positions`, `GET /api/accounts/{id}/pnl`, `GET /api/accounts/{id}/orders` | `AccountsController` | Paper accounts, positions, P&L, order history |
 | `POST /api/orders`, `GET /api/orders/{id}` | `OrdersController` | Submit / fetch paper orders |
-| `GET /api/broker/kite/login-url`, `GET /api/broker/kite/callback`, `GET /api/broker/kite/status`, `POST /api/broker/kite/sync-instruments`, `POST /api/broker/kite/sync-equities`, `POST /api/broker/kite/ticker/start`, `POST /api/broker/kite/ticker/stop` | `BrokerController` | Kite Connect auth, instrument/equity sync, ticker control — **no order endpoint** |
+| `GET /api/broker/kite/login-url`, `GET /api/broker/kite/callback`, `GET /api/broker/kite/status`, `POST /api/broker/kite/sync-instruments`, `POST /api/broker/kite/sync-equities`, `POST /api/broker/kite/ticker/start`, `POST /api/broker/kite/ticker/stop`, `POST /api/broker/kite/import-historical` | `BrokerController` | Kite Connect auth, instrument/equity sync, ticker control, historical-data import — **no order endpoint** |
+| `POST /api/backtests` | `BacktestController` | Replay a strategy against imported historical bars — never places an order |
 | `GET /api/strategy/status`, `POST /api/strategy/run-once` | `StrategyController` | Inspect/manually trigger the strategy runner |
 | `POST /api/notifications/test`, `POST /api/notifications/pnl-check-once` | `NotificationsController` | Manually test WhatsApp alerts |
-| `POST /api/live-orders`, `GET /api/live-orders`, `GET /api/live-orders/{id}`, `POST /api/live-orders/{id}/approve`, `POST /api/live-orders/{id}/reject`, `GET /api/live-orders/positions` | `LiveOrdersController` | Real-money order submission/approval workflow — the only place a real Kite order can originate |
+| `POST /api/live-orders`, `GET /api/live-orders`, `GET /api/live-orders/{id}`, `POST /api/live-orders/{id}/approve`, `POST /api/live-orders/{id}/reject`, `POST /api/live-orders/{id}/cancel`, `POST /api/live-orders/{id}/modify`, `GET /api/live-orders/positions` | `LiveOrdersController` | Real-money order submission/approval/cancel/modify workflow — the only place a real Kite order can originate |
+
+All of the above require the `X-Api-Key` header except `GET /health`.
 
 ## Background services
 

@@ -24,6 +24,11 @@ public static class DependencyInjection
 
         services.AddDbContext<MarketsEngineDbContext>(options => options.UseNpgsql(connectionString));
 
+        services.AddOptions<AuthSettings>()
+            .Bind(configuration.GetSection(AuthSettings.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<TradingSettings>()
             .Bind(configuration.GetSection(TradingSettings.SectionName))
             .ValidateDataAnnotations()
@@ -37,6 +42,8 @@ public static class DependencyInjection
         services.AddScoped<KiteClientFactory>();
         services.AddScoped<KiteInstrumentSyncService>();
         services.AddSingleton<KiteTickerService>();
+        services.AddScoped<KiteHistoricalDataService>();
+        services.AddScoped<BacktestRunnerService>();
 
         services.AddOptions<LiveTradingSettings>()
             .Bind(configuration.GetSection(LiveTradingSettings.SectionName))

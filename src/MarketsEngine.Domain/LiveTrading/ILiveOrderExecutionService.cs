@@ -13,6 +13,16 @@ public interface ILiveOrderExecutionService
 
     /// <summary>Marks a pending order Rejected without ever contacting Kite.</summary>
     Task<LiveOrderSubmissionResult> RejectAsync(Guid liveOrderId, string reason, CancellationToken cancellationToken = default);
+
+    /// <summary>Cancels an order already placed with Kite (Submitted/Open/PartiallyFilled). For a PendingApproval order, use RejectAsync instead.</summary>
+    Task<LiveOrderSubmissionResult> CancelAsync(Guid liveOrderId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Changes the quantity of an order already placed with Kite (Submitted/Open/PartiallyFilled).
+    /// Quantity-only, not price/order-type - market orders have no price to modify, and widening
+    /// to other order types is out of this project's "market orders only" v1 scope.
+    /// </summary>
+    Task<LiveOrderSubmissionResult> ModifyAsync(Guid liveOrderId, int newQuantity, CancellationToken cancellationToken = default);
 }
 
 public record SubmitLiveOrderRequest(Guid InstrumentId, OrderSide Side, int Quantity, string IdempotencyKey, string Source);
@@ -25,4 +35,6 @@ public record LiveOrderSubmissionResult(bool Success, bool PendingApproval, stri
     public static LiveOrderSubmissionResult Pending(LiveOrder order) => new(true, true, null, null, order);
 
     public static LiveOrderSubmissionResult Submitted(LiveOrder order) => new(true, false, null, null, order);
+
+    public static LiveOrderSubmissionResult Ok(LiveOrder order) => new(true, false, null, null, order);
 }

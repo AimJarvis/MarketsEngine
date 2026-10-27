@@ -32,9 +32,11 @@ Connect with a GUI client (DBeaver etc.) using the same connection string as
 cd src/MarketsEngine.Api
 dotnet user-secrets init   # one-time, already done in this repo
 dotnet user-secrets set "ConnectionStrings:Postgres" "Host=localhost;Port=5433;Database=...;Username=...;Password=..."
+dotnet user-secrets set "Auth:ApiKey" "$(openssl rand -hex 32)"   # required — the app won't boot without this
 ```
 
-See `docs/CONFIGURATION.md` for the full list of required keys.
+See `docs/CONFIGURATION.md` for the full list of required keys, and for how to use the API key
+(every request needs an `X-Api-Key` header; Swagger UI has an Authorize button for it).
 
 ## 3. Run the API
 

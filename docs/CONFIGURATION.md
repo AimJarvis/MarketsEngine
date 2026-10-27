@@ -5,6 +5,25 @@ All secrets live in `dotnet user-secrets` (or environment variables in a real de
 at startup via `ValidateDataAnnotations().ValidateOnStart()` — an invalid value fails fast at boot
 with a clear message instead of misbehaving at runtime.
 
+## API authentication — required on every request except `/health`
+
+Every endpoint requires an `X-Api-Key` header matching `Auth:ApiKey` (required, validated at
+startup — **the app will not boot without it configured**, same fail-fast behavior as the Postgres
+connection string). There is no default key; a missing/wrong key always returns `401`.
+
+```bash
+cd src/MarketsEngine.Api
+dotnet user-secrets set "Auth:ApiKey" "$(openssl rand -hex 32)"
+```
+
+- All `curl`/HTTP calls need `-H "X-Api-Key: <your key>"`.
+- Swagger UI (`/swagger`) has an **Authorize** button (padlock icon) — paste the key once per
+  browser session, then every "Try it out" call includes it automatically.
+- To rotate: set a new value with the same command above and restart the app — the old key stops
+  working immediately.
+- `dotnet user-secrets list` shows this key in plaintext (it's self-issued, not a third-party
+  credential, so that's expected and fine on a local dev machine).
+
 ## Required user-secrets (set from `src/MarketsEngine.Api`)
 
 ```bash
@@ -16,6 +35,7 @@ As of the last check, these keys are set (values are on this machine only, not i
 
 | Key | Purpose | Notes |
 |---|---|---|
+| `Auth:ApiKey` | Required for every API request | See "API authentication" above — the app won't boot without this set |
 | `ConnectionStrings:Postgres` | DB connection string | Points at the `docker-compose.yml` Postgres on host port 5433 |
 | `Kite:ApiKey` / `Kite:ApiSecret` | Zerodha Kite Connect app credentials | **Currently placeholder values** — no real Kite subscription purchased yet. App runs fine without these (Kite features throw a clear `KiteNotConfiguredException`) |
 | `Twilio:AccountSid` / `Twilio:AuthToken` | Twilio account credentials | From the Twilio Console |
@@ -105,9 +125,35 @@ signals route to `LiveOrderExecutionService` and can place real orders with Kite
   signal time and again right before the real Kite call).
 - A real `kite.GetMargins()` check for sufficient cash before a buy is placed.
 
+Once an order is `Submitted`/`Open` with Kite, `POST /api/live-orders/{id}/cancel` pulls it back
+(not valid for a `PendingApproval` order — use `/reject` for that, which never touches Kite).
+Status updates arrive two ways: instantly via Kite's `Ticker.OnOrderUpdate` push when
+`KiteTickerService` is running (`POST /api/broker/kite/ticker/start`), and via
+`LiveOrderReconciliationService`'s periodic poll (`ReconciliationIntervalSeconds`) as a guaranteed
+fallback regardless of whether the ticker is running.
+
 **Before ever setting this to `true` against a real account: start with the smallest possible
 order (e.g. 1 share of a cheap, liquid stock) and approve it yourself manually — do not let a
 strategy's first-ever live approval be unattended.** See `docs/STATUS.md` for current status.
+
+## Backtesting — no `appsettings.json` section, everything is per-request
+
+1. **Import historical data** (requires real Kite credentials + a completed login + the
+   instrument already synced): `POST /api/broker/kite/import-historical` with
+   `{ "instrumentId": "...", "from": "2023-01-01", "to": "2024-01-01" }` — pulls daily candles and
+   stores them in `HistoricalBar`. Only needs to be done once per instrument/date range; re-running
+   it just skips bars already imported.
+2. **Run a backtest**: `POST /api/backtests` with `instrumentId`, `strategyName`
+   (`"SimpleMomentum"` or `"Kronos"`), `from`/`to` (must be within imported data), and the strategy
+   parameters (`lookbackSamples`, `quantityPerSignal`, `takeProfitPercent`, `stopLossPercent`,
+   `feePerLot`, `startingCapital`, and `momentumThresholdPercent` if using `SimpleMomentum`) — these
+   are **independent of live `Strategy:*`/`Trading:*` config**, so you can experiment with
+   different values without touching anything that affects paper/live trading. Returns the full
+   trade-by-trade result plus summary stats synchronously.
+
+A `Kronos` backtest calls the real Kronos Python service once per bar (see `docs/SETUP.md`) — start
+it first, and expect it to be much slower than a `SimpleMomentum` backtest (no external
+dependency, effectively instant).
 
 ## Turning automation on (local testing)
 

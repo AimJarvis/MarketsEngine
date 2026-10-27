@@ -167,6 +167,97 @@ public class LiveOrderExecutionService(
         return await RejectExistingAsync(order, "ManuallyRejected", reason, cancellationToken);
     }
 
+    public async Task<LiveOrderSubmissionResult> CancelAsync(Guid liveOrderId, CancellationToken cancellationToken = default)
+    {
+        var order = await dbContext.LiveOrders.FirstOrDefaultAsync(o => o.Id == liveOrderId, cancellationToken);
+        if (order is null)
+            return LiveOrderSubmissionResult.Rejected("OrderNotFound", "The specified live order does not exist.");
+
+        if (order.BrokerOrderId is null || order.Status is not (LiveOrderStatus.Submitted or LiveOrderStatus.Open or LiveOrderStatus.PartiallyFilled))
+        {
+            return LiveOrderSubmissionResult.Rejected(
+                "InvalidState",
+                $"Order is in status {order.Status} and cannot be cancelled with the broker. " +
+                "Use /reject for a PendingApproval order instead.");
+        }
+
+        try
+        {
+            var kite = await kiteClientFactory.CreateAuthenticatedClientAsync(cancellationToken);
+            kite.CancelOrder(OrderId: order.BrokerOrderId, Variety: Constants.Variety.Regular);
+
+            order.Status = LiveOrderStatus.Cancelled;
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation("Live order {OrderId} ({BrokerOrderId}) cancelled with Kite", order.Id, order.BrokerOrderId);
+            return LiveOrderSubmissionResult.Ok(order);
+        }
+        catch (Exception ex) when (ex is KiteException or HttpRequestException)
+        {
+            logger.LogError(ex, "Failed to cancel live order {OrderId} with Kite", order.Id);
+            return LiveOrderSubmissionResult.Rejected("KiteCancelFailed", ex.Message);
+        }
+    }
+
+    public async Task<LiveOrderSubmissionResult> ModifyAsync(Guid liveOrderId, int newQuantity, CancellationToken cancellationToken = default)
+    {
+        if (newQuantity <= 0)
+            return LiveOrderSubmissionResult.Rejected("InvalidQuantity", "Quantity must be greater than zero.");
+
+        var order = await dbContext.LiveOrders
+            .Include(o => o.Instrument)
+            .FirstOrDefaultAsync(o => o.Id == liveOrderId, cancellationToken);
+
+        if (order is null)
+            return LiveOrderSubmissionResult.Rejected("OrderNotFound", "The specified live order does not exist.");
+
+        if (order.BrokerOrderId is null || order.Status is not (LiveOrderStatus.Submitted or LiveOrderStatus.Open or LiveOrderStatus.PartiallyFilled))
+        {
+            return LiveOrderSubmissionResult.Rejected(
+                "InvalidState",
+                $"Order is in status {order.Status} and cannot be modified with the broker.");
+        }
+
+        // Defense in depth, same as ApproveAsync: re-validate risk against the NEW quantity
+        // before touching Kite, since the original approval only validated the original quantity.
+        var latestQuote = await dbContext.MarketQuotes
+            .Where(q => q.InstrumentId == order.InstrumentId)
+            .OrderByDescending(q => q.QuotedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (latestQuote is null)
+            return LiveOrderSubmissionResult.Rejected("NoQuoteAvailable", "No quote is available for this instrument.");
+
+        var estimatedPrice = order.Side == OrderSide.Buy ? latestQuote.AskPrice : latestQuote.BidPrice;
+        var notionalToday = await GetNotionalTradedTodayAsync(DateTime.UtcNow, cancellationToken);
+        var risk = LiveOrderRiskEvaluator.Evaluate(newQuantity, estimatedPrice, order.Instrument!.LotSize, notionalToday, LiveSettings);
+
+        if (risk.Result == LiveOrderRiskEvaluator.RiskResult.Rejected)
+            return LiveOrderSubmissionResult.Rejected(risk.ErrorCode!, risk.ErrorMessage!);
+
+        try
+        {
+            var kite = await kiteClientFactory.CreateAuthenticatedClientAsync(cancellationToken);
+            kite.ModifyOrder(
+                OrderId: order.BrokerOrderId,
+                Quantity: newQuantity * order.Instrument.LotSize,
+                Variety: Constants.Variety.Regular);
+
+            order.Quantity = newQuantity;
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Live order {OrderId} ({BrokerOrderId}) quantity modified to {Quantity}",
+                order.Id, order.BrokerOrderId, newQuantity);
+            return LiveOrderSubmissionResult.Ok(order);
+        }
+        catch (Exception ex) when (ex is KiteException or HttpRequestException)
+        {
+            logger.LogError(ex, "Failed to modify live order {OrderId} with Kite", order.Id);
+            return LiveOrderSubmissionResult.Rejected("KiteModifyFailed", ex.Message);
+        }
+    }
+
     private async Task<LiveOrderSubmissionResult> PlaceWithKiteAsync(LiveOrder order, DomainInstrument instrument, DateTime now, CancellationToken cancellationToken)
     {
         var exchange = instrument.Kind == InstrumentKind.Equity ? Constants.Exchange.NSE : Constants.Exchange.NFO;
