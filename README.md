@@ -18,6 +18,7 @@ See `docs/` for the parts that don't show up just by reading the code:
 
 | Doc | What it covers |
 |---|---|
+| [`docs/MARKET_BASICS.md`](docs/MARKET_BASICS.md) | How the stock market/options actually work, mapped field-by-field to the real Kite Connect API and this project's own entities |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layers, projects, key components |
 | [`docs/REQUEST_FLOWS.md`](docs/REQUEST_FLOWS.md) | Line-by-line trace of the core flows: manual order, strategy auto-buy, exits, live order approval, backtesting |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Every `appsettings.json` section + required `dotnet user-secrets` |
