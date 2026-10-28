@@ -1,8 +1,7 @@
 # Status
 
-Last updated: 2026-10-28 (operational hardening: logging, health monitoring, position
-reconciliation, price-history seeding, CI). This file exists so a future session (or a
-lost-context recovery) can
+Last updated: 2026-10-29 (per-position, strategy-decided stop-loss/take-profit). This file exists
+so a future session (or a lost-context recovery) can
 tell quickly what's actually been proven to work versus what's built but unverified versus what's
 a known, explicit gap. Update it whenever a major piece changes state — don't let it go stale.
 
@@ -88,6 +87,58 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
   `GetHistoricalData` import call (`POST /api/broker/kite/import-historical`) — same
   real-credentials blocker as everything else live. The replay engine itself has no such blocker
   and is fully proven correct independent of it.
+- **Per-position stop-loss/take-profit, decided by the strategy (added 2026-10-29)** — exits now
+  read each position's own `StopLossPercent`/`TakeProfitPercent` (set from the `StrategySignal`
+  that opened it), falling back to the global `Strategy:*` default only when the signal had no
+  opinion. `Kronos` sizes both off its own forecast magnitude (`KronosTakeProfitFactor`/
+  `KronosStopLossFactor`); `SimpleMomentum` has no magnitude to work with and always falls back to
+  the global default. Verified: migration applied cleanly (3 new nullable `numeric(18,4)` column
+  pairs on `PaperPositions`/`LivePositions`/`LiveOrders`), clean boot, 18/18 tests pass, a manual
+  paper order still opens/closes correctly and the new fields are correctly `null` and exposed via
+  `GET /api/accounts/{id}/positions`. **A hand-computed synthetic backtest re-run after the change
+  reproduced the exact same numbers as before** (1 trade, entry 160 → exit 176 TakeProfit,
+  RealizedPnL=16, FinalEquity=10016), confirming the refactor didn't alter `SimpleMomentum`/paper
+  behavior, and the new `trades[].takeProfitPercent`/`stopLossPercent` fields correctly reported
+  10/5 (the global default, since `SimpleMomentum` doesn't override). **Two real bugs found and
+  fixed during a deep-dive review before this was considered done, not just code review in
+  isolation**:
+  1. The override was originally set only when `position is null` (brand-new row) — but
+     `PaperPosition`/`LivePosition` rows are reused across a full close→reopen cycle (unique index
+     on instrument), so a position reopened after fully closing would silently keep the *original*
+     cycle's override forever. Fixed to key off "was this position flat before this fill"
+     (`currentNetQuantity == 0`), which also now clears the override to `null` on a full close so a
+     flat row never shows a stale value. **Verified live**: closed and reopened the same paper
+     position twice via HTTP, confirmed the row is reused (not duplicated) and the override field
+     clears/resets correctly through the cycle (only exercised with `null` overrides, since
+     exercising a real non-`null` override end-to-end needs a live `Kronos` signal — the Kronos
+     Python service wasn't running this session).
+  2. `BacktestEngine` evaluated the strategy's signal but completely ignored
+     `signal.StopLossPercent`/`TakeProfitPercent`, always using the flat `BacktestConfig` default —
+     meaning a `Kronos` backtest would never have actually exercised Kronos's forecast-scaled exit,
+     silently testing different behavior than what runs live/paper. Fixed to resolve each trade
+     cycle's thresholds once, at entry, exactly mirroring how `StrategyRunnerService` resolves them
+     live.
+  - **Not yet verified**: a `Kronos` signal actually producing a non-default, forecast-scaled
+    override end to end (needs the Kronos service running + a live/backtest run against it — not
+    done this session). A flip (single fill crossing from long to short or vice versa) correctly
+    refreshing the override is verified by code review only, not a live reproduction — it requires
+    a manual order larger than an existing strategy-opened position, an edge case not exercised live.
+  - **Explicit scope note, not a gap**: there is no limit-order/trigger-price concept anywhere in
+    this codebase (confirmed via full-codebase grep) — every order, including every exit, is a
+    plain Kite `MARKET` order. "Stop-loss" here means a periodic poll-then-market-sell, never a
+    resting broker-side SL/SL-M order; between polls (`Strategy:EvaluationIntervalSeconds`), price
+    can move past the configured stop with nothing protecting it.
+- **Four additional live-trading risk checks (added 2026-10-29)**, inspired by reviewing a
+  third-party Claude Code skill pack (`trader-skill`, US-equities-focused, not usable directly —
+  see the conversation) against our own `LiveOrderRiskEvaluator`: `BlockedTradingSymbols` (manual
+  deny-list), `MaxOrdersPerDay` (order count cap, separate from the existing notional cap),
+  `CashBufferPercent` (a buy can't leave less than this % of pre-trade available cash untouched),
+  and `MaxPositionPercentOfEquity` (a single instrument's position can't exceed this % of total
+  account equity). Verified: clean build, 18/18 tests pass, clean boot (new config binds and
+  validates), `/health` responds. **Not yet verified against a real Kite account** — the cash
+  buffer and position-% checks specifically need real `GetMargins()`/position data to actually
+  trigger, same real-credentials blocker as everything else live; the blocked-symbol and
+  daily-count checks need no real data and are straightforward to reason about from code alone.
 - **Operational hardening (added 2026-10-28)**:
   - **File logging (Serilog)** — console + a daily-rolling file (`src/MarketsEngine.Api/logs/`,
     30-day retention) confirmed capturing real app output (verified: framework warnings and

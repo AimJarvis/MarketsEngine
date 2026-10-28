@@ -26,7 +26,8 @@ public class TradingOrderGateway(
                 return GatewayOrderResult.Rejected(PaperMode, "AccountIdRequired", "AccountId is required in paper mode.");
 
             var paperRequest = new SubmitOrderRequest(
-                request.AccountId.Value, request.InstrumentId, request.Side, request.TradingStyle, request.Quantity, request.IdempotencyKey);
+                request.AccountId.Value, request.InstrumentId, request.Side, request.TradingStyle, request.Quantity, request.IdempotencyKey,
+                request.StopLossPercent, request.TakeProfitPercent);
 
             var paperResult = await paperOrderExecutionService.SubmitOrderAsync(paperRequest, cancellationToken);
 
@@ -35,7 +36,9 @@ public class TradingOrderGateway(
                 : GatewayOrderResult.Rejected(PaperMode, paperResult.ErrorCode ?? "Unknown", paperResult.ErrorMessage ?? "Paper order was rejected.");
         }
 
-        var liveRequest = new SubmitLiveOrderRequest(request.InstrumentId, request.Side, request.Quantity, request.IdempotencyKey, request.Source);
+        var liveRequest = new SubmitLiveOrderRequest(
+            request.InstrumentId, request.Side, request.Quantity, request.IdempotencyKey, request.Source,
+            request.StopLossPercent, request.TakeProfitPercent);
         var liveResult = await liveOrderExecutionService.SubmitOrderAsync(liveRequest, cancellationToken);
 
         if (!liveResult.Success || liveResult.Order is null)

@@ -17,4 +17,13 @@ public class LivePosition
     public decimal AverageEntryPrice { get; set; }
     public decimal RealizedPnL { get; set; }
     public DateTime LastUpdatedAtUtc { get; set; }
+
+    /// <summary>
+    /// Per-position override of Strategy:StopLossPercent/TakeProfitPercent, copied from the
+    /// LiveOrder whose fill opened this position (null = strategy had no opinion, use the global
+    /// default). Set only when the position is opened fresh; averaging into an existing position
+    /// does not change it.
+    /// </summary>
+    public decimal? StopLossPercent { get; set; }
+    public decimal? TakeProfitPercent { get; set; }
 }

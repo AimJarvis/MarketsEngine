@@ -14,7 +14,9 @@ public record SubmitOrderRequest(
     OrderSide Side,
     TradingStyle TradingStyle,
     int Quantity,
-    string IdempotencyKey);
+    string IdempotencyKey,
+    decimal? StopLossPercent = null,
+    decimal? TakeProfitPercent = null);
 
 public record OrderSubmissionResult(bool Success, string? ErrorCode, string? ErrorMessage, PaperOrder? Order, PaperFill? Fill)
 {

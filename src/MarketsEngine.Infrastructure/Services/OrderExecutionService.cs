@@ -155,6 +155,28 @@ public class OrderExecutionService(
             dbContext.PaperPositions.Add(position);
         }
 
+        var wasFlat = currentNetQuantity == 0;
+        var flipped = !wasFlat && positionUpdate.NewNetQuantity != 0
+            && Math.Sign(currentNetQuantity) != Math.Sign(positionUpdate.NewNetQuantity);
+
+        if (wasFlat || flipped)
+        {
+            // Fresh open in a new direction - brand-new row, an existing-but-flat row being
+            // reopened, or a fill that flipped long<->short outright (only reachable via a manual
+            // order larger than the current holding; strategies never submit a sell entry).
+            // Either way, adopt this signal's override; averaging into an already-open position
+            // (same sign before and after) never changes it.
+            position.StopLossPercent = request.StopLossPercent;
+            position.TakeProfitPercent = request.TakeProfitPercent;
+        }
+        else if (positionUpdate.NewNetQuantity == 0)
+        {
+            // Fully closed - clear it so a flat row never shows a stale override from the cycle
+            // that just ended; the branch above sets it fresh on the next open.
+            position.StopLossPercent = null;
+            position.TakeProfitPercent = null;
+        }
+
         position.NetQuantity = positionUpdate.NewNetQuantity;
         position.AverageEntryPrice = positionUpdate.NewAverageEntryPrice;
         position.RealizedPnL += positionUpdate.RealizedPnLDelta;

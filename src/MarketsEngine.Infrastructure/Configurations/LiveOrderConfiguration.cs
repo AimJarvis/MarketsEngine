@@ -19,6 +19,8 @@ public class LiveOrderConfiguration : IEntityTypeConfiguration<LiveOrder>
         builder.Property(o => o.Source).IsRequired().HasMaxLength(64);
         builder.Property(o => o.RejectionReason).HasMaxLength(256);
         builder.Property(o => o.BrokerOrderId).HasMaxLength(64);
+        builder.Property(o => o.StopLossPercent).HasPrecision(18, 4);
+        builder.Property(o => o.TakeProfitPercent).HasPrecision(18, 4);
 
         builder.HasOne(o => o.Instrument)
             .WithMany()

@@ -73,6 +73,27 @@ public static class LiveOrderReconciler
             dbContext.LivePositions.Add(position);
         }
 
+        var wasFlat = currentNetQuantity == 0;
+        var flipped = !wasFlat && update.NewNetQuantity != 0
+            && Math.Sign(currentNetQuantity) != Math.Sign(update.NewNetQuantity);
+
+        if (wasFlat || flipped)
+        {
+            // Fresh open in a new direction - brand-new row, an existing-but-flat row being
+            // reopened, or a fill that flipped long<->short outright. Either way, adopt this
+            // order's override; averaging into an already-open position (same sign before and
+            // after) never changes it.
+            position.StopLossPercent = order.StopLossPercent;
+            position.TakeProfitPercent = order.TakeProfitPercent;
+        }
+        else if (update.NewNetQuantity == 0)
+        {
+            // Fully closed - clear it so a flat row never shows a stale override from the cycle
+            // that just ended; the branch above sets it fresh on the next open.
+            position.StopLossPercent = null;
+            position.TakeProfitPercent = null;
+        }
+
         position.NetQuantity = update.NewNetQuantity;
         position.AverageEntryPrice = update.NewAverageEntryPrice;
         position.RealizedPnL += update.RealizedPnLDelta;

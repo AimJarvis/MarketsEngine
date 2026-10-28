@@ -51,9 +51,22 @@ public class KronosStrategy(HttpClient httpClient, StrategySettings settings) : 
 
         var predictedChangePercent = (predictedPrice - currentPrice) / currentPrice * 100m;
 
-        return predictedChangePercent >= settings.KronosDirectionThresholdPercent
-            ? new StrategySignal(true, $"{context.TradingSymbol} Kronos forecast +{predictedChangePercent:F2}% over next {settings.KronosForecastHorizon} candles")
-            : StrategySignal.None;
+        if (predictedChangePercent < settings.KronosDirectionThresholdPercent)
+        {
+            return StrategySignal.None;
+        }
+
+        // Size the exit off the forecast's own magnitude rather than the global default - a
+        // forecast predicting a big move earns a wider take-profit and (scaled down) a wider
+        // stop; a barely-over-threshold forecast gets a tight leash on both.
+        var takeProfitPercent = predictedChangePercent * settings.KronosTakeProfitFactor;
+        var stopLossPercent = predictedChangePercent * settings.KronosStopLossFactor;
+
+        return new StrategySignal(
+            true,
+            $"{context.TradingSymbol} Kronos forecast +{predictedChangePercent:F2}% over next {settings.KronosForecastHorizon} candles",
+            StopLossPercent: stopLossPercent,
+            TakeProfitPercent: takeProfitPercent);
     }
 
     private record KronosForecastRequest(decimal[] Prices, int Horizon);

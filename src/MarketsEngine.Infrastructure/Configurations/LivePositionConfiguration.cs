@@ -12,6 +12,8 @@ public class LivePositionConfiguration : IEntityTypeConfiguration<LivePosition>
 
         builder.Property(p => p.AverageEntryPrice).HasPrecision(18, 4);
         builder.Property(p => p.RealizedPnL).HasPrecision(18, 4);
+        builder.Property(p => p.StopLossPercent).HasPrecision(18, 4);
+        builder.Property(p => p.TakeProfitPercent).HasPrecision(18, 4);
 
         builder.HasOne(p => p.Instrument)
             .WithMany()

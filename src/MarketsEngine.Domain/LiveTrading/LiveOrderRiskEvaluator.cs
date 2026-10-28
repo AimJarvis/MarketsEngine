@@ -1,3 +1,4 @@
+using System.Linq;
 using MarketsEngine.Domain.Configuration;
 
 namespace MarketsEngine.Domain.LiveTrading;
@@ -18,12 +19,28 @@ public static class LiveOrderRiskEvaluator
     }
 
     public static Outcome Evaluate(
+        string tradingSymbol,
         int quantity,
         decimal estimatedPrice,
         int lotSize,
         decimal notionalAlreadyTradedToday,
+        int ordersPlacedToday,
         LiveTradingSettings settings)
     {
+        if (settings.BlockedTradingSymbols.Any(blocked => string.Equals(blocked, tradingSymbol, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Outcome.Reject(
+                "BlockedTradingSymbol",
+                $"'{tradingSymbol}' is on LiveTrading:BlockedTradingSymbols and cannot be traded.");
+        }
+
+        if (ordersPlacedToday >= settings.MaxOrdersPerDay)
+        {
+            return Outcome.Reject(
+                "MaxOrdersPerDayExceeded",
+                $"{ordersPlacedToday} orders already placed today meets or exceeds LiveTrading:MaxOrdersPerDay ({settings.MaxOrdersPerDay}).");
+        }
+
         if (quantity > settings.MaxQuantityPerOrder)
         {
             return Outcome.Reject(

@@ -15,8 +15,10 @@ namespace MarketsEngine.Infrastructure.Strategies;
 
 /// <summary>
 /// Each pass does two independent things:
-/// 1. Exit check - every open position (paper AND live) is checked against the configured
-///    take-profit/stop-loss thresholds, regardless of InstrumentKindFilter or ActiveStrategy.
+/// 1. Exit check - every open position (paper AND live) is checked against its own
+///    take-profit/stop-loss thresholds (set by the strategy signal that opened it, falling back
+///    to the configured Strategy:TakeProfitPercent/StopLossPercent when the signal had no
+///    opinion), regardless of InstrumentKindFilter or ActiveStrategy.
 ///    An exit always closes in the SAME domain the position was opened in (PaperPosition closes
 ///    via IOrderExecutionService, LivePosition via ILiveOrderExecutionService) - it never routes
 ///    through ITradingOrderGateway, because the current LiveTrading:Enabled switch must not
@@ -191,7 +193,8 @@ public class StrategyRunnerService(
 
                 var request = new GatewayOrderRequest(
                     settings.AccountId.Value, instrument.Id, OrderSide.Buy, TradingStyle.Intraday,
-                    settings.QuantityPerSignal, idempotencyKey, $"Strategy:{settings.ActiveStrategy}");
+                    settings.QuantityPerSignal, idempotencyKey, $"Strategy:{settings.ActiveStrategy}",
+                    signal.StopLossPercent, signal.TakeProfitPercent);
 
                 var result = await tradingOrderGateway.SubmitAsync(request, cancellationToken);
 
@@ -246,7 +249,9 @@ public class StrategyRunnerService(
 
                 var exitReason = PositionExitEvaluator.Evaluate(
                     position.NetQuantity, position.AverageEntryPrice, latestQuote.LastTradedPrice,
-                    position.Instrument!.LotSize, settings.TakeProfitPercent, settings.StopLossPercent);
+                    position.Instrument!.LotSize,
+                    position.TakeProfitPercent ?? settings.TakeProfitPercent,
+                    position.StopLossPercent ?? settings.StopLossPercent);
 
                 if (exitReason == PositionExitEvaluator.ExitReason.None)
                 {
@@ -313,7 +318,9 @@ public class StrategyRunnerService(
 
                 var exitReason = PositionExitEvaluator.Evaluate(
                     position.NetQuantity, position.AverageEntryPrice, latestQuote.LastTradedPrice,
-                    position.Instrument!.LotSize, settings.TakeProfitPercent, settings.StopLossPercent);
+                    position.Instrument!.LotSize,
+                    position.TakeProfitPercent ?? settings.TakeProfitPercent,
+                    position.StopLossPercent ?? settings.StopLossPercent);
 
                 if (exitReason == PositionExitEvaluator.ExitReason.None)
                 {

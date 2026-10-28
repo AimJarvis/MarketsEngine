@@ -19,9 +19,12 @@ public record BacktestApiRequest(
 
 public record BacktestTradeResponse(
     string Side, DateTime EntryAtUtc, decimal EntryPrice, int Quantity,
-    DateTime? ExitAtUtc, decimal? ExitPrice, string? ExitReason, decimal? RealizedPnL, decimal Fees);
+    DateTime? ExitAtUtc, decimal? ExitPrice, string? ExitReason, decimal? RealizedPnL, decimal Fees,
+    decimal TakeProfitPercent, decimal StopLossPercent);
 
-public record OpenPositionResponse(int NetQuantity, decimal AverageEntryPrice, decimal UnrealizedPnLAtEnd);
+public record OpenPositionResponse(
+    int NetQuantity, decimal AverageEntryPrice, decimal UnrealizedPnLAtEnd,
+    decimal TakeProfitPercent, decimal StopLossPercent);
 
 public record BacktestResultResponse(
     DateTime FromUtc, DateTime ToUtc, int BarsEvaluated, decimal StartingCapital, decimal FinalEquity,
@@ -36,7 +39,9 @@ public static class BacktestResponseMapping
         r.TotalFeesPaid, r.TradeCount, r.WinCount, r.LossCount, r.WinRatePercent, r.MaxDrawdownPercent,
         r.Trades.Select(t => new BacktestTradeResponse(
             t.Side.ToString(), t.EntryAtUtc, t.EntryPrice, t.Quantity,
-            t.ExitAtUtc, t.ExitPrice, t.ExitReason, t.RealizedPnL, t.Fees)).ToList(),
+            t.ExitAtUtc, t.ExitPrice, t.ExitReason, t.RealizedPnL, t.Fees,
+            t.TakeProfitPercent, t.StopLossPercent)).ToList(),
         r.OpenPositionAtEnd is null ? null : new OpenPositionResponse(
-            r.OpenPositionAtEnd.NetQuantity, r.OpenPositionAtEnd.AverageEntryPrice, r.OpenPositionAtEnd.UnrealizedPnLAtEnd));
+            r.OpenPositionAtEnd.NetQuantity, r.OpenPositionAtEnd.AverageEntryPrice, r.OpenPositionAtEnd.UnrealizedPnLAtEnd,
+            r.OpenPositionAtEnd.TakeProfitPercent, r.OpenPositionAtEnd.StopLossPercent));
 }

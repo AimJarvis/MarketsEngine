@@ -42,9 +42,13 @@ public record BacktestTrade(
     decimal? ExitPrice,
     string? ExitReason,
     decimal? RealizedPnL,
-    decimal Fees);
+    decimal Fees,
+    decimal TakeProfitPercent,
+    decimal StopLossPercent);
 
-public record OpenPositionSummary(int NetQuantity, decimal AverageEntryPrice, decimal UnrealizedPnLAtEnd);
+public record OpenPositionSummary(
+    int NetQuantity, decimal AverageEntryPrice, decimal UnrealizedPnLAtEnd,
+    decimal TakeProfitPercent, decimal StopLossPercent);
 
 public record BacktestResult(
     DateTime FromUtc,

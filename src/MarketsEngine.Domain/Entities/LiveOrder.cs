@@ -29,5 +29,14 @@ public class LiveOrder
     public DateTime? ApprovedAtUtc { get; set; }
     public DateTime? SubmittedAtUtc { get; set; }
 
+    /// <summary>
+    /// Carries the originating StrategySignal's stop-loss/take-profit override (if any) from
+    /// submission through to the LivePosition the eventual fill opens - the live fill happens
+    /// asynchronously (broker confirmation via poll or push), at which point the original
+    /// SubmitLiveOrderRequest is long gone, so this is the only place left to read it from.
+    /// </summary>
+    public decimal? StopLossPercent { get; set; }
+    public decimal? TakeProfitPercent { get; set; }
+
     public LiveFill? Fill { get; set; }
 }

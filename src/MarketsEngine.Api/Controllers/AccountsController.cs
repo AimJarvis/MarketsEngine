@@ -73,7 +73,8 @@ public class AccountsController(MarketsEngineDbContext dbContext, AccountPnLServ
             var unrealizedPnL = await pnLService.CalculateUnrealizedPnLAsync(position, cancellationToken);
             responses.Add(new PositionResponse(
                 position.InstrumentId, position.Instrument!.TradingSymbol, position.NetQuantity,
-                position.AverageEntryPrice, position.RealizedPnL, unrealizedPnL, position.LastUpdatedAtUtc));
+                position.AverageEntryPrice, position.RealizedPnL, unrealizedPnL, position.LastUpdatedAtUtc,
+                position.StopLossPercent, position.TakeProfitPercent));
         }
 
         return Ok(responses);

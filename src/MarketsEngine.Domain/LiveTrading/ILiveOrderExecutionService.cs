@@ -25,7 +25,9 @@ public interface ILiveOrderExecutionService
     Task<LiveOrderSubmissionResult> ModifyAsync(Guid liveOrderId, int newQuantity, CancellationToken cancellationToken = default);
 }
 
-public record SubmitLiveOrderRequest(Guid InstrumentId, OrderSide Side, int Quantity, string IdempotencyKey, string Source);
+public record SubmitLiveOrderRequest(
+    Guid InstrumentId, OrderSide Side, int Quantity, string IdempotencyKey, string Source,
+    decimal? StopLossPercent = null, decimal? TakeProfitPercent = null);
 
 public record LiveOrderSubmissionResult(bool Success, bool PendingApproval, string? ErrorCode, string? ErrorMessage, LiveOrder? Order)
 {

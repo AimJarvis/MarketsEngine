@@ -17,7 +17,8 @@ public record AccountResponse(
 
 public record PositionResponse(
     Guid InstrumentId, string TradingSymbol, int NetQuantity, decimal AverageEntryPrice,
-    decimal RealizedPnL, decimal? UnrealizedPnL, DateTime LastUpdatedAtUtc);
+    decimal RealizedPnL, decimal? UnrealizedPnL, DateTime LastUpdatedAtUtc,
+    decimal? StopLossPercent, decimal? TakeProfitPercent);
 
 public record AccountPnLResponse(Guid AccountId, decimal TotalRealizedPnL, decimal TotalUnrealizedPnL, decimal NetPnL);
 

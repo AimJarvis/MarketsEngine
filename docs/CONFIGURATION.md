@@ -82,10 +82,36 @@ Controls which symbols `POST /api/broker/kite/sync-equities` pulls. NIFTY/BANKNI
   "KronosServiceUrl": null,                 // e.g. http://localhost:8000 — required when ActiveStrategy=Kronos
   "KronosForecastHorizon": 12,
   "KronosDirectionThresholdPercent": 0.3,
-  "TakeProfitPercent": 10.0,                // applies to EVERY open position regardless of filter/strategy
+  "KronosTakeProfitFactor": 1.0,            // Kronos only: scales its own forecast % into a take-profit for the position it opens
+  "KronosStopLossFactor": 0.5,              // Kronos only: same, for stop-loss (lower factor = tighter leash relative to the forecast)
+  "TakeProfitPercent": 10.0,                // the FALLBACK used when the entry signal didn't specify its own (see below)
   "StopLossPercent": 5.0
 }
 ```
+
+**Per-position stop-loss/take-profit, not just one global number.** `PositionExitEvaluator` now reads
+each open position's *own* `StopLossPercent`/`TakeProfitPercent` (set from the `StrategySignal` that
+opened it), falling back to the two settings above only when the signal didn't specify one:
+
+- **`SimpleMomentum`** has no basis to size its own exit (its threshold is a direction signal, not a
+  magnitude forecast) — it always leaves these null, so its positions always use the global default.
+- **`Kronos`** does have a magnitude — its own predicted % move — so it sizes the position's
+  take-profit/stop-loss off that forecast (`predictedChangePercent × KronosTakeProfitFactor` /
+  `× KronosStopLossFactor`) instead of the global default. A forecast predicting a bigger move earns
+  a wider take-profit and (scaled down) a wider stop; a forecast barely over
+  `KronosDirectionThresholdPercent` gets a tight leash on both. Deliberately simple — a fixed scale
+  of the forecast, not a real risk model.
+- A manual order (`POST /api/orders`, `POST /api/live-orders`) always uses the global default — there
+  is no API field for a human to set an override; only a strategy signal can.
+- The override is fixed at the moment a position opens (or reopens after being fully flat, or flips
+  direction) and does not change while averaging into an already-open position. `GET
+  /api/accounts/{id}/positions` and `GET /api/live-orders/positions` both expose the resolved
+  `stopLossPercent`/`takeProfitPercent` (`null` = using the global default) so you can see which one
+  is actually governing a position.
+- **There is no broker-side stop order anywhere in this system** (no Kite SL/SL-M order type, no
+  trigger/limit price on any order) — every order, including exits, is a plain Kite `MARKET` order.
+  "Stop-loss" here means "poll price every `EvaluationIntervalSeconds`, then market-sell if the
+  threshold is breached," not a resting order that protects you between polls.
 
 ### `PnLAlerts`
 ```json
@@ -107,10 +133,20 @@ Controls which symbols `POST /api/broker/kite/sync-equities` pulls. NIFTY/BANKNI
   "MaxQuantityPerOrder": 1,          // in lots, same unit as Strategy:QuantityPerSignal
   "MaxNotionalPerOrder": 10000,      // ₹, rejected before Kite is ever contacted
   "MaxNotionalPerDay": 25000,        // ₹, summed across today's already-submitted live orders
+  "MaxOrdersPerDay": 20,             // order COUNT cap, separate from the notional cap above
+  "BlockedTradingSymbols": [],       // e.g. ["NIFTY24NOV24500CE"] — a manual deny-list, checked before every order
+  "CashBufferPercent": 10.0,         // a buy may not leave less than this % of pre-trade available cash untouched
+  "MaxPositionPercentOfEquity": 50.0,// a single instrument's position may not exceed this % of (cash + all open LivePosition value)
   "ReconciliationIntervalSeconds": 15,
   "PendingApprovalExpiryMinutes": 30 // a stale pending approval auto-rejects rather than firing on an old price
 }
 ```
+
+**`MaxOrdersPerDay`/`BlockedTradingSymbols`** are checked by the pure `LiveOrderRiskEvaluator` (same
+place as `MaxQuantityPerOrder`/`MaxNotionalPerOrder`/`MaxNotionalPerDay`) — at submission, approval,
+and modify time. **`CashBufferPercent`/`MaxPositionPercentOfEquity`** are checked once, right before
+the real `kite.PlaceOrder` call in `PlaceWithKiteAsync`, because they need the real Kite cash balance
+and current position values — not available at the earlier checkpoints.
 
 **`LiveTrading:Enabled` is the single switch between paper and real money.** When `false` (the
 default), `ITradingOrderGateway` routes every order through the existing, unchanged paper engine —
@@ -148,7 +184,13 @@ strategy's first-ever live approval be unattended.** See `docs/STATUS.md` for cu
    parameters (`lookbackSamples`, `quantityPerSignal`, `takeProfitPercent`, `stopLossPercent`,
    `feePerLot`, `startingCapital`, and `momentumThresholdPercent` if using `SimpleMomentum`) — these
    are **independent of live `Strategy:*`/`Trading:*` config**, so you can experiment with
-   different values without touching anything that affects paper/live trading. Returns the full
+   different values without touching anything that affects paper/live trading. The request's
+   `takeProfitPercent`/`stopLossPercent` are the **fallback**, same as the live config — a `Kronos`
+   backtest resolves each trade's actual take-profit/stop-loss from that trade's own entry
+   forecast, same as it would live, and reports what was actually used on every trade/open-position
+   in the response (`trades[].takeProfitPercent`/`stopLossPercent`,
+   `openPositionAtEnd.takeProfitPercent`/`stopLossPercent`) — useful for seeing why a `Kronos`
+   trade exited where it did when it doesn't match the request's flat default. Returns the full
    trade-by-trade result plus summary stats synchronously.
 
 A `Kronos` backtest calls the real Kronos Python service once per bar (see `docs/SETUP.md`) — start

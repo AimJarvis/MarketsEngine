@@ -99,9 +99,15 @@ modify, and widening to other order types is outside this project's "market orde
 - `Instrument.DataSource` must be `"Kite"` — a live order against a mock/fictitious instrument is
   refused outright (`NonKiteInstrument`), since the paper engine's mock trading symbols are never
   meant to reach a real exchange.
-- `LiveOrderRiskEvaluator` (pure, Domain) enforces `MaxQuantityPerOrder`, `MaxNotionalPerOrder`, and
-  `MaxNotionalPerDay` (summed from today's already-submitted `LiveOrder`s) — checked both when the
-  order is parked and again right before the real Kite call.
+- `LiveOrderRiskEvaluator` (pure, Domain) enforces `BlockedTradingSymbols`, `MaxOrdersPerDay`,
+  `MaxQuantityPerOrder`, `MaxNotionalPerOrder`, and `MaxNotionalPerDay` (the last two summed from
+  today's already-submitted `LiveOrder`s) — checked at submission, at approval, and again at modify
+  time, since config or the day's totals may have changed in between.
+- Two further checks run once, inside `PlaceWithKiteAsync`, right before the real `kite.PlaceOrder`
+  call, because they need the real Kite cash balance (not available at the earlier checkpoints):
+  `CashBufferPercent` (a buy may not leave less than this % of pre-trade available cash untouched)
+  and `MaxPositionPercentOfEquity` (a single instrument's position, after this fill, may not exceed
+  this % of total equity — Kite cash plus the market value of every open `LivePosition`).
 
 **Exits are domain-locked, not mode-switched**: `StrategyRunnerService.CheckExitsAsync` closes a
 `PaperPosition` via `IOrderExecutionService` and a `LivePosition` via `ILiveOrderExecutionService`
@@ -118,8 +124,11 @@ things, in order:
 1. **Exit check** — every open `PaperPosition` and `LivePosition` is evaluated against
    `PositionExitEvaluator` (take-profit/stop-loss on % return of cost basis, works for long and
    short) **regardless of `InstrumentKindFilter` or `ActiveStrategy`** — risk management must never
-   silently stop just because the entry filter changed. See above for why exits close in the same
-   domain the position was opened in, not through the gateway.
+   silently stop just because the entry filter changed. The thresholds used are the position's own
+   `StopLossPercent`/`TakeProfitPercent` (set from the `StrategySignal` that opened it — see
+   below), falling back to the global `Strategy:StopLossPercent`/`TakeProfitPercent` when the
+   signal had no opinion. See above for why exits close in the same domain the position was opened
+   in, not through the gateway.
 2. **Entry check** — the active `IStrategy` (resolved via keyed DI:
    `GetRequiredKeyedService<IStrategy>(settings.ActiveStrategy)`) is evaluated against every
    eligible instrument (filtered by `Strategy:InstrumentKindFilter`); a buy is submitted via
@@ -139,14 +148,25 @@ and resets on restart.
 Pure, stateless, keyed by name in DI:
 
 - **`SimpleMomentumStrategy`** (Domain) — rule-based: signals buy if the recent price window moved
-  up by more than `Strategy:MomentumThresholdPercent`.
+  up by more than `Strategy:MomentumThresholdPercent`. Has no basis to size its own stop-loss/
+  take-profit (the threshold is a direction signal, not a magnitude forecast), so its
+  `StrategySignal` leaves `StopLossPercent`/`TakeProfitPercent` null — those positions use the
+  global `Strategy:StopLossPercent`/`TakeProfitPercent` default.
 - **`KronosStrategy`** (Infrastructure) — calls an external Kronos forecasting HTTP service
   (`Strategy:KronosServiceUrl`) with the recent price window, signals buy if the forecast direction
   exceeds `Strategy:KronosDirectionThresholdPercent`. Kronos itself is a general OHLCV forecasting
   model, not a trading strategy — turning a forecast into a buy/no-buy decision is this class's job.
+  Unlike `SimpleMomentum`, it **does** have a magnitude to work with — its own predicted % move —
+  so it sizes the position's take-profit/stop-loss off that forecast
+  (`predictedChangePercent × Strategy:KronosTakeProfitFactor` /
+  `× Strategy:KronosStopLossFactor`, defaults 1.0/0.5) instead of the global default. Deliberately
+  simple (a fixed scale of the forecast, not a real risk model) — the point is only that Kronos has
+  a basis to decide, where `SimpleMomentum` does not.
 
 Both strategies only ever signal "buy" (never short), matching the defined-risk preference stated
-up front. All exits are handled uniformly by `PositionExitEvaluator`, not by the strategies.
+up front. Exits are still evaluated uniformly by `PositionExitEvaluator` for every position — only
+the thresholds fed into it can now vary per-position (see "Strategy runner" above), not the exit
+mechanism itself.
 
 ## Kite Connect integration (`MarketsEngine.Infrastructure/Brokers/`)
 
@@ -194,7 +214,11 @@ closed the live re-entry race found earlier in this project.
 
 A trade record spans one full flat→open→flat cycle (clean because strategies only ever signal buy
 and exits always close the full quantity) — `EntryPrice` is the average entry price right before
-closing, `RealizedPnL` is net of every fee paid across the cycle (entry + exit), not gross.
+closing, `RealizedPnL` is net of every fee paid across the cycle (entry + exit), not gross. Each
+trade (and any still-open position at the end) also reports the `TakeProfitPercent`/
+`StopLossPercent` actually resolved for that cycle (the entry signal's own override, or
+`BacktestConfig`'s flat default) — not necessarily the same value across trades in one backtest when
+`Kronos` is the strategy, since its override varies with each entry's forecast magnitude.
 
 `BacktestRunnerService` (Infrastructure) loads bars for one instrument/date range, resolves the
 strategy — `SimpleMomentum` is constructed fresh per request (so different thresholds can be

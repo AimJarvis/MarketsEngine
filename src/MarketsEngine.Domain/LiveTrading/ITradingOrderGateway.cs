@@ -24,7 +24,9 @@ public record GatewayOrderRequest(
     TradingStyle TradingStyle,
     int Quantity,
     string IdempotencyKey,
-    string Source);
+    string Source,
+    decimal? StopLossPercent = null,
+    decimal? TakeProfitPercent = null);
 
 public record GatewayOrderResult(
     bool Success,

@@ -17,6 +17,12 @@ namespace MarketsEngine.Domain.Backtesting;
 /// flat. Re-entry on the exact same bar an exit just fired is skipped (mirrors, in the simplest
 /// possible bar-level form, the live CooldownMinutes fix for the same-pass re-entry race found
 /// during live testing) - no separate cooldown config is modeled here.
+///
+/// The take-profit/stop-loss used for a given cycle is resolved once, at the bar that opens it,
+/// from the entry signal's own StopLossPercent/TakeProfitPercent (falling back to
+/// config.TakeProfitPercent/StopLossPercent) - exactly mirroring how StrategyRunnerService resolves
+/// it live, so a Kronos backtest actually exercises Kronos's forecast-scaled exit rather than
+/// silently substituting the flat config default.
 /// </summary>
 public static class BacktestEngine
 {
@@ -40,6 +46,8 @@ public static class BacktestEngine
         var totalFeesPaid = 0m;
         var cycleFees = 0m;
         DateTime? cycleEntryAtUtc = null;
+        var cycleTakeProfitPercent = config.TakeProfitPercent;
+        var cycleStopLossPercent = config.StopLossPercent;
         var trades = new List<BacktestTrade>();
         var peakEquity = config.StartingCapital;
         var maxDrawdownPercent = 0m;
@@ -59,7 +67,7 @@ public static class BacktestEngine
             if (netQuantity != 0)
             {
                 var exitReason = PositionExitEvaluator.Evaluate(
-                    netQuantity, averageEntryPrice, bar.Close, config.LotSize, config.TakeProfitPercent, config.StopLossPercent);
+                    netQuantity, averageEntryPrice, bar.Close, config.LotSize, cycleTakeProfitPercent, cycleStopLossPercent);
 
                 if (exitReason != PositionExitEvaluator.ExitReason.None)
                 {
@@ -82,7 +90,9 @@ public static class BacktestEngine
                         ExitPrice: bar.Close,
                         ExitReason: exitReason.ToString(),
                         RealizedPnL: update.RealizedPnLDelta - cycleFees,
-                        Fees: cycleFees));
+                        Fees: cycleFees,
+                        TakeProfitPercent: cycleTakeProfitPercent,
+                        StopLossPercent: cycleStopLossPercent));
 
                     netQuantity = update.NewNetQuantity;
                     averageEntryPrice = update.NewAverageEntryPrice;
@@ -107,6 +117,8 @@ public static class BacktestEngine
                     if (wasFlat)
                     {
                         cycleEntryAtUtc = bar.TimestampUtc;
+                        cycleTakeProfitPercent = signal.TakeProfitPercent ?? config.TakeProfitPercent;
+                        cycleStopLossPercent = signal.StopLossPercent ?? config.StopLossPercent;
                     }
 
                     netQuantity = update.NewNetQuantity;
@@ -132,7 +144,7 @@ public static class BacktestEngine
         var finalEquity = config.StartingCapital + totalRealizedPnL - totalFeesPaid + finalUnrealizedPnL;
 
         var openPositionAtEnd = netQuantity != 0
-            ? new OpenPositionSummary(netQuantity, averageEntryPrice, finalUnrealizedPnL)
+            ? new OpenPositionSummary(netQuantity, averageEntryPrice, finalUnrealizedPnL, cycleTakeProfitPercent, cycleStopLossPercent)
             : null;
 
         var wins = trades.Count(t => t.RealizedPnL > 0);

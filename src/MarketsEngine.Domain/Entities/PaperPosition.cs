@@ -13,4 +13,14 @@ public class PaperPosition
     public decimal AverageEntryPrice { get; set; }
     public decimal RealizedPnL { get; set; }
     public DateTime LastUpdatedAtUtc { get; set; }
+
+    /// <summary>
+    /// Per-position override of Strategy:StopLossPercent/TakeProfitPercent, set from the
+    /// StrategySignal that opened the position (null = strategy had no opinion, use the global
+    /// default). Set only when the position is opened fresh; averaging into an existing position
+    /// does not change it, so a later signal can't loosen/tighten the exit governing size already
+    /// held.
+    /// </summary>
+    public decimal? StopLossPercent { get; set; }
+    public decimal? TakeProfitPercent { get; set; }
 }

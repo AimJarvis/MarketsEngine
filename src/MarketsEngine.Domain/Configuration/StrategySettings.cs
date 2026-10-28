@@ -53,9 +53,25 @@ public class StrategySettings
     public decimal KronosDirectionThresholdPercent { get; set; } = 0.3m;
 
     /// <summary>
+    /// Scales Kronos's own forecast magnitude (predicted % move) into a take-profit/stop-loss
+    /// percent for the position it opens, instead of using the global default below. E.g. a
+    /// forecast of +2% with TakeProfitFactor=1.0/StopLossFactor=0.5 sets take-profit at 2% and
+    /// stop-loss at 1% for that position specifically. Deliberately simple (a fixed scale of the
+    /// forecast, not a real risk model) - the point is only that Kronos has a basis to size its
+    /// own exit, where SimpleMomentum does not.
+    /// </summary>
+    [Range(0, 10)]
+    public decimal KronosTakeProfitFactor { get; set; } = 1.0m;
+
+    [Range(0, 10)]
+    public decimal KronosStopLossFactor { get; set; } = 0.5m;
+
+    /// <summary>
     /// Risk management: applies to every open position on the watched account, regardless of
     /// InstrumentKindFilter or which entry strategy opened it - switching the entry strategy or
-    /// filter should never silently stop protecting an existing position.
+    /// filter should never silently stop protecting an existing position. This is the fallback
+    /// used when the entry strategy's signal didn't specify its own StopLossPercent/TakeProfitPercent
+    /// (see StrategySignal) - a per-position override from the strategy takes precedence over this.
     /// </summary>
     [Range(0, 1000)]
     public decimal TakeProfitPercent { get; set; } = 10.0m;

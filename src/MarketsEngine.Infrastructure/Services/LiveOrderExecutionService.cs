@@ -82,9 +82,11 @@ public class LiveOrderExecutionService(
         }
 
         var estimatedPrice = request.Side == OrderSide.Buy ? latestQuote.AskPrice : latestQuote.BidPrice;
-        var notionalToday = await GetNotionalTradedTodayAsync(now, cancellationToken);
+        var todaysStats = await GetTodaysOrderStatsAsync(now, cancellationToken);
 
-        var risk = LiveOrderRiskEvaluator.Evaluate(request.Quantity, estimatedPrice, instrument.LotSize, notionalToday, LiveSettings);
+        var risk = LiveOrderRiskEvaluator.Evaluate(
+            instrument.TradingSymbol, request.Quantity, estimatedPrice, instrument.LotSize,
+            todaysStats.Notional, todaysStats.Count, LiveSettings);
         if (risk.Result == LiveOrderRiskEvaluator.RiskResult.Rejected)
             return await RejectAsync(request, now, risk.ErrorCode!, risk.ErrorMessage!, cancellationToken);
 
@@ -97,7 +99,9 @@ public class LiveOrderExecutionService(
             IdempotencyKey = request.IdempotencyKey,
             Source = request.Source,
             RequestedAtUtc = now,
-            Status = LiveSettings.RequireManualApproval ? LiveOrderStatus.PendingApproval : LiveOrderStatus.Approved
+            Status = LiveSettings.RequireManualApproval ? LiveOrderStatus.PendingApproval : LiveOrderStatus.Approved,
+            StopLossPercent = request.StopLossPercent,
+            TakeProfitPercent = request.TakeProfitPercent
         };
 
         dbContext.LiveOrders.Add(order);
@@ -142,8 +146,10 @@ public class LiveOrderExecutionService(
             return await RejectExistingAsync(order, "NoQuoteAvailable", "No quote is available for this instrument at approval time.", cancellationToken);
 
         var estimatedPrice = order.Side == OrderSide.Buy ? latestQuote.AskPrice : latestQuote.BidPrice;
-        var notionalToday = await GetNotionalTradedTodayAsync(now, cancellationToken);
-        var risk = LiveOrderRiskEvaluator.Evaluate(order.Quantity, estimatedPrice, order.Instrument!.LotSize, notionalToday, LiveSettings);
+        var todaysStats = await GetTodaysOrderStatsAsync(now, cancellationToken);
+        var risk = LiveOrderRiskEvaluator.Evaluate(
+            order.Instrument!.TradingSymbol, order.Quantity, estimatedPrice, order.Instrument!.LotSize,
+            todaysStats.Notional, todaysStats.Count, LiveSettings);
 
         if (risk.Result == LiveOrderRiskEvaluator.RiskResult.Rejected)
             return await RejectExistingAsync(order, risk.ErrorCode!, risk.ErrorMessage!, cancellationToken);
@@ -229,8 +235,10 @@ public class LiveOrderExecutionService(
             return LiveOrderSubmissionResult.Rejected("NoQuoteAvailable", "No quote is available for this instrument.");
 
         var estimatedPrice = order.Side == OrderSide.Buy ? latestQuote.AskPrice : latestQuote.BidPrice;
-        var notionalToday = await GetNotionalTradedTodayAsync(DateTime.UtcNow, cancellationToken);
-        var risk = LiveOrderRiskEvaluator.Evaluate(newQuantity, estimatedPrice, order.Instrument!.LotSize, notionalToday, LiveSettings);
+        var todaysStats = await GetTodaysOrderStatsAsync(DateTime.UtcNow, cancellationToken);
+        var risk = LiveOrderRiskEvaluator.Evaluate(
+            order.Instrument!.TradingSymbol, newQuantity, estimatedPrice, order.Instrument!.LotSize,
+            todaysStats.Notional, todaysStats.Count, LiveSettings);
 
         if (risk.Result == LiveOrderRiskEvaluator.RiskResult.Rejected)
             return LiveOrderSubmissionResult.Rejected(risk.ErrorCode!, risk.ErrorMessage!);
@@ -283,6 +291,61 @@ public class LiveOrderExecutionService(
                     cancellationToken);
             }
 
+            // These two need real account state (cash, current position values), only available
+            // here, right before the real Kite call - unlike the pure LiveOrderRiskEvaluator
+            // checks already run twice before this point (quantity/notional/blocked/daily-count).
+            if (order.Side == OrderSide.Buy)
+            {
+                var cashAfterTrade = margins.Available.Cash - estimatedNotional;
+                var requiredCashBuffer = margins.Available.Cash * (LiveSettings.CashBufferPercent / 100m);
+
+                if (cashAfterTrade < requiredCashBuffer)
+                {
+                    return await RejectExistingAsync(
+                        order, "CashBufferBreached",
+                        $"Placing this order would leave {cashAfterTrade:F2} in cash, below the required " +
+                        $"{LiveSettings.CashBufferPercent}% buffer ({requiredCashBuffer:F2}) of available cash.",
+                        cancellationToken);
+                }
+
+                var openPositions = await dbContext.LivePositions
+                    .Where(p => p.NetQuantity != 0)
+                    .Include(p => p.Instrument)
+                    .ToListAsync(cancellationToken);
+
+                var positionsMarketValue = 0m;
+                var thisInstrumentCurrentValue = 0m;
+                foreach (var position in openPositions)
+                {
+                    var positionQuote = await dbContext.MarketQuotes
+                        .Where(q => q.InstrumentId == position.InstrumentId)
+                        .OrderByDescending(q => q.QuotedAtUtc)
+                        .FirstOrDefaultAsync(cancellationToken);
+                    var positionPrice = positionQuote?.LastTradedPrice ?? position.AverageEntryPrice;
+                    var positionValue = Math.Abs(position.NetQuantity) * (position.Instrument?.LotSize ?? 1) * positionPrice;
+
+                    positionsMarketValue += positionValue;
+                    if (position.InstrumentId == instrument.Id)
+                    {
+                        thisInstrumentCurrentValue = positionValue;
+                    }
+                }
+
+                var totalEquity = margins.Available.Cash + positionsMarketValue;
+                var resultingInstrumentValue = thisInstrumentCurrentValue + estimatedNotional;
+                var resultingPercent = totalEquity > 0 ? resultingInstrumentValue / totalEquity * 100m : 100m;
+
+                if (resultingPercent > LiveSettings.MaxPositionPercentOfEquity)
+                {
+                    return await RejectExistingAsync(
+                        order, "MaxPositionPercentExceeded",
+                        $"This buy would make {instrument.TradingSymbol} {resultingPercent:F1}% of total account " +
+                        $"equity ({totalEquity:F2}), exceeding LiveTrading:MaxPositionPercentOfEquity " +
+                        $"({LiveSettings.MaxPositionPercentOfEquity}%).",
+                        cancellationToken);
+                }
+            }
+
             var response = kite.PlaceOrder(
                 Exchange: exchange,
                 TradingSymbol: instrument.TradingSymbol,
@@ -314,7 +377,9 @@ public class LiveOrderExecutionService(
         }
     }
 
-    private async Task<decimal> GetNotionalTradedTodayAsync(DateTime now, CancellationToken cancellationToken)
+    private record TodaysOrderStats(decimal Notional, int Count);
+
+    private async Task<TodaysOrderStats> GetTodaysOrderStatsAsync(DateTime now, CancellationToken cancellationToken)
     {
         var todayStartUtc = DateTime.SpecifyKind(now.Date, DateTimeKind.Utc);
 
@@ -327,8 +392,10 @@ public class LiveOrderExecutionService(
                         && o.Status != LiveOrderStatus.PendingApproval)
             .ToListAsync(cancellationToken);
 
-        return todaysOrders.Sum(o =>
+        var notional = todaysOrders.Sum(o =>
             (o.Fill?.FillPrice ?? 0m) * (o.Instrument?.LotSize ?? 1) * o.Quantity);
+
+        return new TodaysOrderStats(notional, todaysOrders.Count);
     }
 
     private async Task<LiveOrderSubmissionResult> RejectAsync(SubmitLiveOrderRequest request, DateTime now, string errorCode, string errorMessage, CancellationToken cancellationToken)

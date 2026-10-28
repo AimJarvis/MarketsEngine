@@ -264,8 +264,16 @@ namespace MarketsEngine.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
+                    b.Property<decimal?>("StopLossPercent")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
                     b.Property<DateTime?>("SubmittedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal?>("TakeProfitPercent")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
 
                     b.HasKey("Id");
 
@@ -304,6 +312,14 @@ namespace MarketsEngine.Infrastructure.Migrations
                         .HasColumnType("integer");
 
                     b.Property<decimal>("RealizedPnL")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal?>("StopLossPercent")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal?>("TakeProfitPercent")
                         .HasPrecision(18, 4)
                         .HasColumnType("numeric(18,4)");
 
@@ -493,6 +509,14 @@ namespace MarketsEngine.Infrastructure.Migrations
                         .HasColumnType("integer");
 
                     b.Property<decimal>("RealizedPnL")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal?>("StopLossPercent")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal?>("TakeProfitPercent")
                         .HasPrecision(18, 4)
                         .HasColumnType("numeric(18,4)");
 
