@@ -1,6 +1,8 @@
 # Status
 
-Last updated: 2026-10-28 (backtesting added). This file exists so a future session (or a lost-context recovery) can
+Last updated: 2026-10-28 (operational hardening: logging, health monitoring, position
+reconciliation, price-history seeding, CI). This file exists so a future session (or a
+lost-context recovery) can
 tell quickly what's actually been proven to work versus what's built but unverified versus what's
 a known, explicit gap. Update it whenever a major piece changes state — don't let it go stale.
 
@@ -86,6 +88,25 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
   `GetHistoricalData` import call (`POST /api/broker/kite/import-historical`) — same
   real-credentials blocker as everything else live. The replay engine itself has no such blocker
   and is fully proven correct independent of it.
+- **Operational hardening (added 2026-10-28)**:
+  - **File logging (Serilog)** — console + a daily-rolling file (`src/MarketsEngine.Api/logs/`,
+    30-day retention) confirmed capturing real app output (verified: framework warnings and
+    request logging both appeared in the file after a real boot + request cycle).
+  - **Strategy price-history seeding** — `StrategyRunnerService` now seeds an instrument's rolling
+    window from existing `MarketQuotes` on first use instead of starting empty after a restart.
+    Verified by code path (queries `MarketQuotes` ordered descending, takes `LookbackSamples`,
+    re-orders ascending) — not yet observed catching a real restart-then-immediate-signal case live.
+  - **CI pipeline** — `.github/workflows/ci.yml` runs `dotnet build` + `dotnet test` on every push/PR;
+    not yet observed running on GitHub itself (will confirm on the next push).
+  - **Health heartbeat tracking** — confirmed via clean app boot that all three watched services
+    (`StrategyRunnerService`, `LiveOrderReconciliationService`, `PnLAlertService`) and the new
+    `HealthMonitorService` itself resolve correctly through DI (a misregistration would have
+    crashed startup). **Not yet observed actually firing a stale alert** — that requires either a
+    real crash or waiting out a real multi-minute threshold, neither exercised this session.
+  - **`LivePosition` vs. Kite position drift check** — code path confirmed to safely no-op when
+    there are no open `LivePosition` rows (the common/current case). The actual comparison logic
+    against `kite.GetPositions()` has never run against a real position, same real-credentials
+    blocker as everything else live.
 
 ## ⚠️ Built, but not fully verified
 

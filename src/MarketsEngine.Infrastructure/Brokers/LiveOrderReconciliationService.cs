@@ -1,5 +1,6 @@
 using MarketsEngine.Domain.Configuration;
 using MarketsEngine.Domain.Enums;
+using MarketsEngine.Infrastructure.Health;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,10 +20,17 @@ namespace MarketsEngine.Infrastructure.Brokers;
 /// ticker is manually started/stopped and isn't always on, so this poll is what guarantees order
 /// status is never permanently stuck even if the ticker was never started. Both paths call the
 /// same LiveOrderReconciler.ApplyUpdateAsync and are idempotent against each other.
+///
+/// Also periodically compares our self-reconciled LivePosition rows against Kite's own real
+/// positions/holdings API - LivePosition is normally built purely from our own recorded fills
+/// (never checked against the broker), so this is a defense-in-depth drift check: it only logs a
+/// warning on mismatch, it never auto-corrects our data from Kite's, since silently overwriting
+/// could mask a real bug instead of surfacing it.
 /// </summary>
 public class LiveOrderReconciliationService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<LiveTradingSettings> settingsMonitor,
+    HealthStatusTracker healthTracker,
     ILogger<LiveOrderReconciliationService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -42,6 +50,8 @@ public class LiveOrderReconciliationService(
                     logger.LogError(ex, "Live order reconciliation pass failed");
                 }
             }
+
+            healthTracker.RecordHeartbeat(nameof(LiveOrderReconciliationService));
 
             try
             {
@@ -64,6 +74,54 @@ public class LiveOrderReconciliationService(
 
         await ExpireStalePendingApprovalsAsync(dbContext, settings, now, cancellationToken);
         await ReconcileOpenOrdersAsync(dbContext, kiteClientFactory, now, cancellationToken);
+        await ReconcilePositionsAgainstKiteAsync(dbContext, kiteClientFactory, cancellationToken);
+    }
+
+    private async Task ReconcilePositionsAgainstKiteAsync(
+        MarketsEngineDbContext dbContext, KiteClientFactory kiteClientFactory, CancellationToken cancellationToken)
+    {
+        var ourPositions = await dbContext.LivePositions
+            .Include(p => p.Instrument)
+            .Where(p => p.NetQuantity != 0)
+            .ToListAsync(cancellationToken);
+
+        if (ourPositions.Count == 0)
+        {
+            return;
+        }
+
+        var kite = await kiteClientFactory.CreateAuthenticatedClientAsync(cancellationToken);
+        var brokerPositionsByToken = kite.GetPositions().Net
+            .GroupBy(p => (long)p.InstrumentToken)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        foreach (var position in ourPositions)
+        {
+            var instrumentToken = position.Instrument?.KiteInstrumentToken;
+            if (instrumentToken is null)
+            {
+                continue;
+            }
+
+            if (!brokerPositionsByToken.TryGetValue(instrumentToken.Value, out var brokerPosition))
+            {
+                logger.LogWarning(
+                    "Position drift: our LivePosition for {Symbol} shows {OurQuantity} lots, but Kite reports no open position at all.",
+                    position.Instrument!.TradingSymbol, position.NetQuantity);
+                continue;
+            }
+
+            var lotSize = position.Instrument!.LotSize;
+            var brokerNetLots = lotSize == 0 ? 0 : brokerPosition.Quantity / lotSize;
+
+            if (brokerNetLots != position.NetQuantity)
+            {
+                logger.LogWarning(
+                    "Position drift: our LivePosition for {Symbol} shows {OurQuantity} lots, Kite reports {BrokerQuantity} lots (avg price ours {OurAvg:F2} vs Kite {BrokerAvg:F2}). Not auto-corrected - review manually.",
+                    position.Instrument.TradingSymbol, position.NetQuantity, brokerNetLots,
+                    position.AverageEntryPrice, brokerPosition.AveragePrice);
+            }
+        }
     }
 
     private async Task ExpireStalePendingApprovalsAsync(

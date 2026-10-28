@@ -4,6 +4,7 @@ using MarketsEngine.Domain.Enums;
 using MarketsEngine.Domain.LiveTrading;
 using MarketsEngine.Domain.Strategies;
 using MarketsEngine.Domain.Trading;
+using MarketsEngine.Infrastructure.Health;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -33,6 +34,7 @@ namespace MarketsEngine.Infrastructure.Strategies;
 public class StrategyRunnerService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<StrategySettings> settingsMonitor,
+    HealthStatusTracker healthTracker,
     ILogger<StrategyRunnerService> logger) : BackgroundService
 {
     private readonly Dictionary<Guid, Queue<PricePoint>> _priceHistory = new();
@@ -56,6 +58,8 @@ public class StrategyRunnerService(
                     logger.LogError(ex, "Strategy evaluation pass failed");
                 }
             }
+
+            healthTracker.RecordHeartbeat(nameof(StrategyRunnerService));
 
             try
             {
@@ -123,6 +127,35 @@ public class StrategyRunnerService(
                 if (latestQuote is null)
                 {
                     continue;
+                }
+
+                bool hasHistory;
+                lock (_historyLock)
+                {
+                    hasHistory = _priceHistory.ContainsKey(instrument.Id);
+                }
+
+                if (!hasHistory)
+                {
+                    // First time seeing this instrument since the app started - seed the rolling
+                    // window from already-persisted quotes instead of starting empty, so a restart
+                    // doesn't silently reset the strategy's view of recent price action.
+                    var seedQuotes = await dbContext.MarketQuotes
+                        .Where(q => q.InstrumentId == instrument.Id)
+                        .OrderByDescending(q => q.QuotedAtUtc)
+                        .Take(settings.LookbackSamples)
+                        .ToListAsync(cancellationToken);
+
+                    var seeded = new Queue<PricePoint>(
+                        seedQuotes.OrderBy(q => q.QuotedAtUtc).Select(q => new PricePoint(q.QuotedAtUtc, q.LastTradedPrice)));
+
+                    lock (_historyLock)
+                    {
+                        if (!_priceHistory.ContainsKey(instrument.Id))
+                        {
+                            _priceHistory[instrument.Id] = seeded;
+                        }
+                    }
                 }
 
                 PricePoint[] windowSnapshot;

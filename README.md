@@ -23,6 +23,8 @@ See `docs/` for the parts that don't show up just by reading the code:
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Every `appsettings.json` section + required `dotnet user-secrets` |
 | [`docs/SETUP.md`](docs/SETUP.md) | Getting a dev environment running (Postgres, migrations, Kronos, Twilio) |
 | [`docs/STATUS.md`](docs/STATUS.md) | What's actually verified vs. built-but-untested vs. known gaps |
+| [`docs/TODO.md`](docs/TODO.md) | Concrete, actionable checklist of what's not done yet |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Current state + ideas for what would actually help reach the objective faster |
 
 ## Quick start
 

@@ -241,4 +241,22 @@ is both hosted by the runtime and directly injectable (e.g. `StrategyController`
 - `KiteTickerService` — live tick ingestion when Kite is configured and started.
 - `StrategyRunnerService` — entry/exit automation loop, off by default.
 - `PnLAlertService` — WhatsApp P&L alert loop, off by default.
-- `LiveOrderReconciliationService` — polls Kite for real order fills and expires stale pending approvals, off unless `LiveTrading:Enabled`.
+- `LiveOrderReconciliationService` — polls Kite for real order fills, expires stale pending
+  approvals, and compares `LivePosition` against Kite's real `GetPositions()` (logs a warning on
+  drift, never auto-corrects), off unless `LiveTrading:Enabled`.
+- `HealthMonitorService` — **always runs** (not gated by any feature flag, since a watchdog you can
+  turn off isn't much of a watchdog). Tracks a heartbeat (`HealthStatusTracker`, a simple
+  in-memory singleton) from the three services above, recorded once per loop iteration regardless
+  of whether that service's own feature flag is enabled — a heartbeat means "the loop is alive,"
+  not "it did work." If a service's heartbeat goes stale beyond ~3× its own configured interval, it
+  logs an error and best-effort sends a WhatsApp alert via the existing `IWhatsAppNotifier` (silent
+  failure if Twilio isn't configured — the log is the guaranteed record). Distinguishes "crashed/
+  hung" from "feature intentionally disabled," which a naive "last ran at X" check wouldn't.
+
+## Logging
+
+Serilog (`Program.cs`) replaces the default logging provider, writing every `ILogger<T>` call —
+every existing call site across controllers/services, no changes needed — to both the console and
+a daily-rolling file at `src/MarketsEngine.Api/logs/marketsengine-<date>.log` (30-day retention,
+gitignored). This is what makes `HealthMonitorService`'s alerts (and everything else) durable
+across restarts instead of only visible in whatever terminal happened to be running the app.

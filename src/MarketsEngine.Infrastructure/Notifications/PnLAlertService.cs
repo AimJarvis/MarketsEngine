@@ -1,5 +1,6 @@
 using MarketsEngine.Domain.Configuration;
 using MarketsEngine.Domain.Notifications;
+using MarketsEngine.Infrastructure.Health;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,6 +17,7 @@ namespace MarketsEngine.Infrastructure.Notifications;
 public class PnLAlertService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<PnLAlertSettings> settingsMonitor,
+    HealthStatusTracker healthTracker,
     ILogger<PnLAlertService> logger) : BackgroundService
 {
     private readonly Dictionary<Guid, decimal> _lastAlertedPnL = new();
@@ -37,6 +39,8 @@ public class PnLAlertService(
                     logger.LogError(ex, "P&L alert check failed");
                 }
             }
+
+            healthTracker.RecordHeartbeat(nameof(PnLAlertService));
 
             try
             {

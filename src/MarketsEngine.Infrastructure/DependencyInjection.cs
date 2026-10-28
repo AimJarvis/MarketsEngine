@@ -4,6 +4,7 @@ using MarketsEngine.Domain.Notifications;
 using MarketsEngine.Domain.Strategies;
 using MarketsEngine.Domain.Trading;
 using MarketsEngine.Infrastructure.Brokers;
+using MarketsEngine.Infrastructure.Health;
 using MarketsEngine.Infrastructure.Notifications;
 using MarketsEngine.Infrastructure.Services;
 using MarketsEngine.Infrastructure.Strategies;
@@ -23,6 +24,8 @@ public static class DependencyInjection
                 "Missing 'ConnectionStrings:Postgres'. Set it with: dotnet user-secrets set \"ConnectionStrings:Postgres\" \"...\"");
 
         services.AddDbContext<MarketsEngineDbContext>(options => options.UseNpgsql(connectionString));
+
+        services.AddSingleton<HealthStatusTracker>();
 
         services.AddOptions<AuthSettings>()
             .Bind(configuration.GetSection(AuthSettings.SectionName))
@@ -97,6 +100,9 @@ public static class DependencyInjection
 
         services.AddSingleton<PnLAlertService>();
         services.AddHostedService(sp => sp.GetRequiredService<PnLAlertService>());
+
+        services.AddSingleton<HealthMonitorService>();
+        services.AddHostedService(sp => sp.GetRequiredService<HealthMonitorService>());
 
         return services;
     }
