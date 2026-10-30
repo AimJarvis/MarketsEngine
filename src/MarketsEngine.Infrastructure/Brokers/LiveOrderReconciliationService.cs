@@ -151,7 +151,7 @@ public class LiveOrderReconciliationService(
     {
         var openOrders = await dbContext.LiveOrders
             .Include(o => o.Instrument)
-            .Include(o => o.Fill)
+            .Include(o => o.Fills)
             .Where(o => o.Status == LiveOrderStatus.Submitted || o.Status == LiveOrderStatus.Open || o.Status == LiveOrderStatus.PartiallyFilled)
             .ToListAsync(cancellationToken);
 
@@ -161,7 +161,13 @@ public class LiveOrderReconciliationService(
         }
 
         var kite = await kiteClientFactory.CreateAuthenticatedClientAsync(cancellationToken);
-        var brokerOrders = kite.GetOrders().ToDictionary(o => o.OrderId);
+        // GroupBy+First, not a plain ToDictionary, so an unexpected duplicate OrderId in a real
+        // response (never observed, but ToDictionary would crash the whole reconciliation pass
+        // outright on one) degrades to "use the first copy" instead - same defensive pattern
+        // already used for kite.GetPositions() below.
+        var brokerOrders = kite.GetOrders()
+            .GroupBy(o => o.OrderId)
+            .ToDictionary(g => g.Key, g => g.First());
 
         foreach (var order in openOrders)
         {

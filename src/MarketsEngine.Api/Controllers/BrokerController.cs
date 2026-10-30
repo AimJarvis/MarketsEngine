@@ -1,5 +1,6 @@
 using MarketsEngine.Api.Contracts;
 using MarketsEngine.Infrastructure.Brokers;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MarketsEngine.Api.Controllers;
@@ -32,7 +33,14 @@ public class BrokerController(
         }
     }
 
+    /// <summary>
+    /// AllowAnonymous: this is a browser redirect FROM Zerodha, not a call we make ourselves - it
+    /// can never carry our X-Api-Key header, so the global auth policy would otherwise reject it
+    /// before it ever reaches here. The request_token itself is the only thing that can prove this
+    /// came from a real Kite login (generateSession fails for any token that didn't).
+    /// </summary>
     [HttpGet("callback")]
+    [AllowAnonymous]
     public async Task<ActionResult<KiteCallbackResponse>> Callback(
         [FromQuery(Name = "request_token")] string? requestToken,
         [FromQuery] string? status,

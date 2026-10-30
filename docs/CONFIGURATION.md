@@ -1,9 +1,24 @@
 # Configuration
 
-All secrets live in `dotnet user-secrets` (or environment variables in a real deployment) —
-**never** in `appsettings.json`. Non-secret tunables live in `appsettings.json` and are validated
-at startup via `ValidateDataAnnotations().ValidateOnStart()` — an invalid value fails fast at boot
-with a clear message instead of misbehaving at runtime.
+**Secrets live in `src/MarketsEngine.Api/.env`** (as of 2026-10-31) — a gitignored file, loaded via
+`DotNetEnv.Configuration.AddDotNetEnv()` in `Program.cs`, using `Section__Key` to mean
+`"Section:Key"` in config (same convention as real environment variables). A missing `.env` is a
+safe no-op (the app falls back to `dotnet user-secrets`/environment variables, the older
+mechanism, which still works but is no longer the documented default). Copy
+`src/MarketsEngine.Api/.env.example` to `.env` in the same folder and fill in real values. Never
+in `appsettings.json`. Non-secret tunables live in `appsettings.json` and are validated at startup
+via `ValidateDataAnnotations().ValidateOnStart()` — an invalid value fails fast at boot with a
+clear message instead of misbehaving at runtime.
+
+Example `.env`:
+```
+Auth__ApiKey=<64 random hex chars - openssl rand -hex 32>
+ConnectionStrings__Postgres=Host=localhost;Port=5433;Database=marketsengine;Username=marketsengine_dev;Password=<see root .env, used by docker-compose>
+Kite__ApiKey=<from your Kite Connect app>
+Kite__ApiSecret=<from your Kite Connect app>
+```
+Note: this is a **separate file** from the repo-root `.env` that `docker-compose.yml` reads for
+the Postgres container's own `POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` — don't merge them.
 
 ## API authentication — required on every request except `/health`
 

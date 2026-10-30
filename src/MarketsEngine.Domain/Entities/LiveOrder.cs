@@ -38,5 +38,12 @@ public class LiveOrder
     public decimal? StopLossPercent { get; set; }
     public decimal? TakeProfitPercent { get; set; }
 
-    public LiveFill? Fill { get; set; }
+    /// <summary>
+    /// One row per observed fill INCREMENT, not one row per order - Kite has no distinct
+    /// "partially filled" status (a partial fill shows status Open with FilledQuantity &lt;
+    /// Quantity), so an order that fills in pieces gets one LiveFill per piece, each recorded the
+    /// moment LiveOrderReconciler observes FilledQuantity increase, regardless of whether the
+    /// order ever reaches Complete.
+    /// </summary>
+    public List<LiveFill> Fills { get; set; } = new();
 }

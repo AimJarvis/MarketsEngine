@@ -48,8 +48,11 @@ public class KiteInstrumentSyncService(
             .Where(i => nearestExpiriesPerUnderlying[i.Name].Contains(i.Expiry!.Value))
             .ToList();
 
+        // Matched by TradingSymbol alone, not scoped to DataSource=="Kite" - a mock instrument
+        // seeded for Development (same symbol) must be found and upgraded in place, not collide
+        // with a duplicate insert against the global unique index on TradingSymbol.
         var existingBySymbol = await dbContext.Instruments
-            .Where(i => i.DataSource == KiteDataSource && i.Kind == InstrumentKind.Option)
+            .Where(i => i.Kind == InstrumentKind.Option)
             .ToDictionaryAsync(i => i.TradingSymbol, cancellationToken);
 
         var now = DateTime.UtcNow;
@@ -64,12 +67,15 @@ public class KiteInstrumentSyncService(
                     Id = Guid.NewGuid(),
                     TradingSymbol = kiteInstrument.TradingSymbol,
                     Kind = InstrumentKind.Option,
-                    DataSource = KiteDataSource,
                     CreatedAtUtc = now
                 };
                 dbContext.Instruments.Add(instrument);
             }
 
+            // Re-asserted every time (not just on insert) - a matched row may have been a mock
+            // instrument a moment ago, and it must be fully upgraded to real, not left tagged Mock
+            // while carrying real Kite data (LiveOrderExecutionService gates on this flag).
+            instrument.DataSource = KiteDataSource;
             instrument.Underlying = kiteInstrument.Name == "BANKNIFTY" ? Underlying.BankNifty : Underlying.Nifty;
             instrument.OptionType = kiteInstrument.InstrumentType == "CE" ? OptionType.Call : OptionType.Put;
             instrument.StrikePrice = kiteInstrument.Strike;
@@ -106,8 +112,12 @@ public class KiteInstrumentSyncService(
             .Where(i => i.InstrumentType == "EQ" && watchlist.Contains(i.TradingSymbol))
             .ToList();
 
+        // Matched by TradingSymbol alone, not scoped to DataSource=="Kite" - the Development mock
+        // seed uses the exact same symbols as a real equity watchlist on purpose, so a mock row
+        // must be found and upgraded in place, not collide with a duplicate insert against the
+        // global unique index on TradingSymbol.
         var existingBySymbol = await dbContext.Instruments
-            .Where(i => i.DataSource == KiteDataSource && i.Kind == InstrumentKind.Equity)
+            .Where(i => i.Kind == InstrumentKind.Equity)
             .ToDictionaryAsync(i => i.TradingSymbol, cancellationToken);
 
         var now = DateTime.UtcNow;
@@ -122,12 +132,15 @@ public class KiteInstrumentSyncService(
                     Id = Guid.NewGuid(),
                     TradingSymbol = kiteInstrument.TradingSymbol,
                     Kind = InstrumentKind.Equity,
-                    DataSource = KiteDataSource,
                     CreatedAtUtc = now
                 };
                 dbContext.Instruments.Add(instrument);
             }
 
+            // Re-asserted every time (not just on insert) - a matched row may have been a mock
+            // instrument a moment ago, and it must be fully upgraded to real, not left tagged Mock
+            // while carrying real Kite data (LiveOrderExecutionService gates on this flag).
+            instrument.DataSource = KiteDataSource;
             instrument.Underlying = null;
             instrument.OptionType = null;
             instrument.StrikePrice = 0m;

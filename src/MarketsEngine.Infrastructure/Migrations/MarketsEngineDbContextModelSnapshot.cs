@@ -201,6 +201,9 @@ namespace MarketsEngine.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("CumulativeFilledQuantityAfter")
+                        .HasColumnType("integer");
+
                     b.Property<decimal>("FillPrice")
                         .HasPrecision(18, 4)
                         .HasColumnType("numeric(18,4)");
@@ -216,7 +219,7 @@ namespace MarketsEngine.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OrderId")
+                    b.HasIndex("OrderId", "CumulativeFilledQuantityAfter")
                         .IsUnique();
 
                     b.ToTable("LiveFills");
@@ -555,8 +558,8 @@ namespace MarketsEngine.Infrastructure.Migrations
             modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveFill", b =>
                 {
                     b.HasOne("MarketsEngine.Domain.Entities.LiveOrder", "Order")
-                        .WithOne("Fill")
-                        .HasForeignKey("MarketsEngine.Domain.Entities.LiveFill", "OrderId")
+                        .WithMany("Fills")
+                        .HasForeignKey("OrderId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -647,7 +650,7 @@ namespace MarketsEngine.Infrastructure.Migrations
 
             modelBuilder.Entity("MarketsEngine.Domain.Entities.LiveOrder", b =>
                 {
-                    b.Navigation("Fill");
+                    b.Navigation("Fills");
                 });
 
             modelBuilder.Entity("MarketsEngine.Domain.Entities.PaperOrder", b =>

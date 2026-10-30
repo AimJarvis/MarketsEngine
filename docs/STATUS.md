@@ -1,7 +1,8 @@
 # Status
 
-Last updated: 2026-10-29 (per-position, strategy-decided stop-loss/take-profit). This file exists
-so a future session (or a lost-context recovery) can
+Last updated: 2026-10-31 (first real Kite Connect login, real instrument sync, real live ticker,
+real historical import - and six real bugs found and fixed by actually exercising them). This file
+exists so a future session (or a lost-context recovery) can
 tell quickly what's actually been proven to work versus what's built but unverified versus what's
 a known, explicit gap. Update it whenever a major piece changes state — don't let it go stale.
 
@@ -158,20 +159,84 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
     there are no open `LivePosition` rows (the common/current case). The actual comparison logic
     against `kite.GetPositions()` has never run against a real position, same real-credentials
     blocker as everything else live.
+- **First real Kite Connect login, instrument sync, live ticker, and historical import (2026-10-31)
+  — the single biggest "unverified" item in this project, now closed.** Real Kite Connect app
+  created, real `Kite:ApiKey`/`ApiSecret` set (via the new `.env` mechanism, see below), real
+  browser login completed, real `BrokerSession` persisted (survives app restart, confirmed).
+  `POST /api/broker/kite/sync-instruments` pulled **1019 real NIFTY/BANKNIFTY option contracts**;
+  `/sync-equities` pulled 4 real equities, correctly upgrading the pre-existing Development mock
+  rows in place (same `TradingSymbol`, `DataSource` flipped `Mock` → `Kite`) rather than erroring
+  or duplicating. The live ticker ran against all 1023 instruments and wrote real, correct quotes
+  (verified: sane bid/ask/LTP values, `ask >= bid` holds, correct UTC timestamps). `POST
+  /api/broker/kite/import-historical` pulled 19 real daily bars for RELIANCE with correct UTC
+  timestamps. **This was true end-to-end verification, not just "it didn't crash"** - actual
+  real-world data was inspected and checked for correctness at every step.
+  **Six real bugs were found and fixed in the process, none of them catchable without a real
+  account** (full detail and root-cause pattern in the project history; one-line summary each):
+  1. `BrokerController.Callback` required the global `X-Api-Key` header, which Zerodha's own
+     redirect can never send — the real login flow 401'd before ever reaching our code. Fixed:
+     `[AllowAnonymous]` on that one endpoint, since the `request_token` itself is Kite's proof the
+     call is legitimate.
+  2. `KiteInstrumentSyncService` matched existing rows by `(TradingSymbol, DataSource=="Kite")`,
+     so it never saw the pre-existing mock equity rows sharing the same symbols on purpose, and
+     tried to insert duplicates against the global unique index. Fixed: match by `TradingSymbol`
+     alone and re-assert `DataSource="Kite"` on every match (not just on insert), so a mock row
+     gets upgraded in place instead of colliding.
+  3. `KiteTickerService.OnTick` opened a new DB scope/connection per tick, fire-and-forget, with
+     no throttling — subscribing to 1023 real instruments in `TickerMode.Full` exhausted
+     Postgres's entire connection pool within seconds. Fixed: buffer ticks in memory (last tick
+     per instrument wins) and flush to the DB in one batch every 2 seconds, same shape as the
+     existing mock quote refresher.
+  4. Kite's SDK (`Utils.UnixToDateTime`) builds tick timestamps by adding the IST offset to the
+     Unix epoch before adding seconds, so the result is IST wall-clock time tagged
+     `DateTimeKind.Unspecified` - confirmed by reading the SDK source, not assumed. Our code just
+     relabeled it `Utc` without subtracting the offset. Npgsql actually refused to write the
+     `Unspecified` value at all, surfacing this immediately. Fixed with an explicit `-5.5 hours
+     then mark Utc` conversion.
+  5. The same class of bug existed in `KiteHistoricalDataService` for `candle.TimeStamp`, except
+     there Kite's REST API returns an explicit UTC-offset string, which .NET parses to
+     `Kind=Local` (correctly resolved against the machine's own timezone — confirmed empirically
+     with a throwaway test, not assumed). The fix there was `.ToUniversalTime()`, not a manual
+     offset subtraction, since the correct conversion already depends on the *running machine's*
+     timezone, not a hardcoded IST assumption.
+  6. Real market depth for illiquid option contracts routinely has one side of the order book
+     empty. `Tick.Bids`/`Tick.Offers` are **always** fixed-length-5 arrays in Full mode (an empty
+     level is `Price=0`, not a shorter array — confirmed from the SDK source), so the original
+     per-side fallback logic (`Bids[0] ?? LastPrice`, independently for each side) could produce
+     `ask < bid`, which a real DB check constraint (`CK_MarketQuote_Ask_Gte_Bid`) caught
+     immediately. Fixed: only trust the real book when *both* sides have a genuine non-zero,
+     non-crossed price; otherwise use `LastPrice` for both.
+  - **Common thread across all six**: every one of them was a wrong assumption about either the
+    Kite SDK's exact behavior or real-world market data shape that **no amount of code review
+    against mock data could have caught** — they only became visible the moment real bytes from a
+    real account flowed through the code for the first time. This is exactly why `docs/STATUS.md`
+    has repeatedly flagged "never tested against real Kite" as the project's biggest open risk.
+  - **Confirmed NOT a bug, by investigation**: `Order.OrderTimestamp`/`ExchangeTimestamp` have the
+    same IST-but-unspecified-Kind quirk as tick timestamps, but our code never reads either field
+    (we timestamp our own order lifecycle independently), so it's a latent SDK quirk with no
+    actual impact here.
+  - **Confirmed gap, not yet fixed — flagged, not silently left**: a **partial fill is never
+    recorded**. Kite has no distinct "partially filled" status string (confirmed via community/
+    forum research, since the SDK's own `Constants.OrderStatus` only defines
+    `COMPLETE`/`CANCELLED`/`REJECTED`) — a partial fill shows status `OPEN` with
+    `filled_quantity < quantity`, and our `LiveOrderReconciler.ApplyUpdateAsync` only ever records
+    a `LiveFill`/updates `LivePosition` when status reaches `Complete`. If an order partially
+    fills and the remainder is later cancelled (or never completes), the quantity that *did* fill
+    at the broker is never reflected in `LivePosition` at all. Fixing this properly means
+    `LiveOrder`'s current 1-to-(0 or 1) relationship with `LiveFill` would need to become a
+    1-to-many (each partial fill recorded as its own `LiveFill`, applied incrementally to
+    `LivePosition`) - a real schema/design decision, not a one-line fix, so it's recorded here
+    rather than done unilaterally mid-audit.
+  - Hardened while auditing, no bug observed yet but same defensive pattern as elsewhere:
+    `LiveOrderReconciliationService.ReconcileOpenOrdersAsync`'s `kite.GetOrders()` now groups by
+    `OrderId` (`.First()`) instead of a plain `ToDictionary`, which would have crashed the whole
+    reconciliation pass on an unexpected duplicate key.
 
 ## ⚠️ Built, but not fully verified
 
-- **Kite Connect real market data** — `Kite:ApiKey`/`Kite:ApiSecret` are still placeholder values.
-  No real Zerodha login, no real instrument sync, no live tick has ever actually flowed through
-  this app. Everything in `Brokers/` has only been verified to **fail cleanly** without real
-  credentials and to **not disturb** the mock-data flow. The real `request_token → access_token`
-  exchange, a live instrument sync, and live ticker ticks remain untested. Deliberately deferred by
-  the user: "build everything first and then pay for subscription."
-- **Historical data import (`KiteHistoricalDataService`)** — verified to fail cleanly (e.g. a clear
-  "sync the instrument first" error when `KiteInstrumentToken` is missing). The actual
-  `kite.GetHistoricalData()` call has never run — same real-credentials blocker as above. Until
-  real data is imported, the backtest engine (verified separately, see above) has nothing real to
-  replay beyond hand-seeded synthetic test data.
+- ~~**Kite Connect real market data**~~ / ~~**Historical data import**~~ — **done (2026-10-31)**,
+  moved to verified below. These two bullets are kept struck through rather than deleted so the
+  history of "this was the single biggest unverified thing in the project" isn't lost.
 - **Real-money order execution (`LiveTrading`)** — the gateway, safety guards, and manual-approval
   plumbing are verified (see above), but **no real order has ever been placed with Kite** — that
   requires the same real Kite credentials/subscription as above, plus a real `BrokerSession`

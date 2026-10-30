@@ -83,3 +83,13 @@ quietly acted on.
    `LiveTrading:RequireManualApproval` off) already exists — the honest recommendation is not to
    use it until there's real evidence (from a properly out-of-sample-tested backtest, on real
    data) that there's something worth automating unattended.
+
+8. **Automate the manual "go live" operational steps** — see `docs/TODO.md`'s "Manual steps
+   required to actually go live" for the full list. Three of the five are genuine automation
+   candidates, not deliberate safety gates: (a) detect an expired/missing Kite session and alert,
+   instead of every sync/ticker/order call silently failing; (b) a scheduled job that re-syncs
+   NIFTY/BANKNIFTY instruments automatically instead of relying on a manual
+   `sync-instruments` call whenever expiries roll over; (c) auto-start the Kite ticker on boot
+   when a valid session already exists, instead of a manual `ticker/start` call every restart.
+   The other two (the strategy opt-in flag, and `LiveTrading:RequireManualApproval`) are
+   intentional gates, not gaps — don't automate those away.

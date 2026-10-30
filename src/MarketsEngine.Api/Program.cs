@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using DotNetEnv.Configuration;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.HttpLogging;
@@ -10,6 +11,12 @@ using MarketsEngine.Api.Services;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Loads src/MarketsEngine.Api/.env (gitignored - never committed) as a configuration source,
+// using the same Section__Key -> "Section:Key" convention as real environment variables, so it
+// overrides appsettings.json/user-secrets for every secret key (ConnectionStrings:Postgres,
+// Auth:ApiKey, Kite:*, Twilio:*). A no-op if .env doesn't exist - never throws, see docs/SETUP.md.
+builder.Configuration.AddDotNetEnv();
 
 builder.Host.UseSerilog((context, configuration) => configuration
     .MinimumLevel.Information()

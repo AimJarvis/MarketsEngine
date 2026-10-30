@@ -1,4 +1,5 @@
 using MarketsEngine.Domain.Entities;
+using System.Linq;
 
 namespace MarketsEngine.Api.Contracts;
 
@@ -13,7 +14,7 @@ public record LiveFillResponse(int FilledQuantity, decimal FillPrice, DateTime F
 public record LiveOrderResponse(
     Guid Id, Guid InstrumentId, string Side, int Quantity, string Status, string Source,
     string? RejectionReason, string? BrokerOrderId, DateTime RequestedAtUtc,
-    DateTime? ApprovedAtUtc, DateTime? SubmittedAtUtc, LiveFillResponse? Fill,
+    DateTime? ApprovedAtUtc, DateTime? SubmittedAtUtc, List<LiveFillResponse> Fills,
     decimal? StopLossPercent, decimal? TakeProfitPercent);
 
 public record LivePositionResponse(
@@ -25,7 +26,7 @@ public static class LiveOrderResponseMapping
     public static LiveOrderResponse ToResponse(this LiveOrder o) => new(
         o.Id, o.InstrumentId, o.Side.ToString(), o.Quantity, o.Status.ToString(), o.Source,
         o.RejectionReason, o.BrokerOrderId, o.RequestedAtUtc, o.ApprovedAtUtc, o.SubmittedAtUtc,
-        o.Fill is null ? null : new LiveFillResponse(o.Fill.FilledQuantity, o.Fill.FillPrice, o.Fill.FilledAtUtc),
+        o.Fills.Select(f => new LiveFillResponse(f.FilledQuantity, f.FillPrice, f.FilledAtUtc)).ToList(),
         o.StopLossPercent, o.TakeProfitPercent);
 
     public static LivePositionResponse ToResponse(this LivePosition p) => new(

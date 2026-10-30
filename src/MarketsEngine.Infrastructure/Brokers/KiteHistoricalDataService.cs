@@ -50,7 +50,14 @@ public class KiteHistoricalDataService(
 
         foreach (var candle in candles)
         {
-            var timestampUtc = DateTime.SpecifyKind(candle.TimeStamp, DateTimeKind.Utc);
+            // candle.TimeStamp comes back as Kind=Local (Convert.ToDateTime correctly resolves
+            // Kite's "+0530"-offset timestamp string against the machine's local timezone,
+            // confirmed empirically, not assumed) - ToUniversalTime() converts it correctly
+            // regardless of what timezone this process happens to be running in. A bare
+            // SpecifyKind(..., Utc) here would silently relabel it without converting, shifting
+            // every bar's timestamp by the local UTC offset (same bug class found and fixed in
+            // KiteTickerService for live ticks).
+            var timestampUtc = candle.TimeStamp.ToUniversalTime();
 
             if (existingSet.Contains(timestampUtc))
             {

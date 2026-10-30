@@ -5,8 +5,11 @@ namespace MarketsEngine.Api.Services;
 
 /// <summary>
 /// Dev-only: re-stamps mock quotes with a small random price jitter every few seconds so they
-/// don't go permanently stale between manual test calls. Only ever touches DataSource == "Mock"
-/// rows, so a real Kite Connect feed (Phase 4) is never affected by this.
+/// don't go permanently stale between manual test calls. Only ever touches instruments whose
+/// Instrument.DataSource is still "Mock" right now - not just quote rows tagged "Mock" - so an
+/// instrument that gets synced/upgraded to real Kite data stops being touched immediately, even
+/// if old mock MarketQuote rows for it still exist in history (KiteInstrumentSyncService upgrades
+/// a matching mock Instrument in place rather than creating a second row for the same symbol).
 /// </summary>
 public class MockQuoteRefresherService(IServiceScopeFactory scopeFactory, ILogger<MockQuoteRefresherService> logger) : BackgroundService
 {
@@ -35,8 +38,13 @@ public class MockQuoteRefresherService(IServiceScopeFactory scopeFactory, ILogge
         using var scope = scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<MarketsEngineDbContext>();
 
+        var mockInstrumentIds = await dbContext.Instruments
+            .Where(i => i.DataSource == "Mock")
+            .Select(i => i.Id)
+            .ToListAsync(cancellationToken);
+
         var latestQuotesPerInstrument = await dbContext.MarketQuotes
-            .Where(q => q.DataSource == "Mock")
+            .Where(q => q.DataSource == "Mock" && mockInstrumentIds.Contains(q.InstrumentId))
             .GroupBy(q => q.InstrumentId)
             .Select(g => g.OrderByDescending(q => q.QuotedAtUtc).First())
             .ToListAsync(cancellationToken);

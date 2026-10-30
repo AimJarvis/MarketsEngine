@@ -41,7 +41,7 @@ public class LiveOrdersController(ILiveOrderExecutionService liveOrderExecutionS
     [HttpGet]
     public async Task<ActionResult<List<LiveOrderResponse>>> List([FromQuery] string? status, CancellationToken cancellationToken)
     {
-        var query = dbContext.LiveOrders.Include(o => o.Fill).AsNoTracking().AsQueryable();
+        var query = dbContext.LiveOrders.Include(o => o.Fills).AsNoTracking().AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -59,7 +59,7 @@ public class LiveOrdersController(ILiveOrderExecutionService liveOrderExecutionS
     public async Task<ActionResult<LiveOrderResponse>> GetById(Guid id, CancellationToken cancellationToken)
     {
         var order = await dbContext.LiveOrders
-            .Include(o => o.Fill)
+            .Include(o => o.Fills)
             .AsNoTracking()
             .FirstOrDefaultAsync(o => o.Id == id, cancellationToken);
 

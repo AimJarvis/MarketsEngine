@@ -13,10 +13,12 @@ public class LiveFillConfiguration : IEntityTypeConfiguration<LiveFill>
         builder.Property(f => f.FillPrice).HasPrecision(18, 4);
 
         builder.HasOne(f => f.Order)
-            .WithOne(o => o.Fill)
-            .HasForeignKey<LiveFill>(f => f.OrderId)
+            .WithMany(o => o.Fills)
+            .HasForeignKey(f => f.OrderId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasIndex(f => f.OrderId).IsUnique();
+        // The race-safety net described on LiveFill.CumulativeFilledQuantityAfter - not just
+        // HasIndex(f => f.OrderId), since one order can now have many fills.
+        builder.HasIndex(f => new { f.OrderId, f.CumulativeFilledQuantityAfter }).IsUnique();
     }
 }

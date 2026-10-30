@@ -31,7 +31,7 @@ public class LiveOrderExecutionService(
     public async Task<LiveOrderSubmissionResult> SubmitOrderAsync(SubmitLiveOrderRequest request, CancellationToken cancellationToken = default)
     {
         var existing = await dbContext.LiveOrders
-            .Include(o => o.Fill)
+            .Include(o => o.Fills)
             .FirstOrDefaultAsync(o => o.IdempotencyKey == request.IdempotencyKey, cancellationToken);
 
         if (existing is not null)
@@ -385,15 +385,17 @@ public class LiveOrderExecutionService(
 
         var todaysOrders = await dbContext.LiveOrders
             .Include(o => o.Instrument)
-            .Include(o => o.Fill)
+            .Include(o => o.Fills)
             .Where(o => o.RequestedAtUtc >= todayStartUtc
                         && o.Status != LiveOrderStatus.Rejected
                         && o.Status != LiveOrderStatus.Failed
                         && o.Status != LiveOrderStatus.PendingApproval)
             .ToListAsync(cancellationToken);
 
-        var notional = todaysOrders.Sum(o =>
-            (o.Fill?.FillPrice ?? 0m) * (o.Instrument?.LotSize ?? 1) * o.Quantity);
+        // Sum of what actually filled (per-fill price x quantity), not order.Quantity x lot size -
+        // an order that only partially filled before being cancelled shouldn't count its full
+        // requested size against today's notional cap.
+        var notional = todaysOrders.Sum(o => o.Fills.Sum(f => f.FillPrice * f.FilledQuantity));
 
         return new TodaysOrderStats(notional, todaysOrders.Count);
     }
