@@ -3,7 +3,7 @@ using MarketsEngine.Domain.Enums;
 namespace MarketsEngine.Domain.Backtesting;
 
 /// <summary>One OHLC bar as the backtest engine needs it - decoupled from the EF entity so this namespace has no DB dependency.</summary>
-public record BacktestBar(DateTime TimestampUtc, decimal Open, decimal High, decimal Low, decimal Close);
+public record BacktestBar(DateTime TimestampUtc, decimal Open, decimal High, decimal Low, decimal Close, decimal Volume);
 
 /// <summary>
 /// MomentumThresholdPercent only applies when StrategyName="SimpleMomentum" - it's constructed

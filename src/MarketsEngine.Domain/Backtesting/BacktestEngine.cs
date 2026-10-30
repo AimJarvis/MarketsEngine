@@ -39,7 +39,7 @@ public static class BacktestEngine
             throw new ArgumentException("At least one historical bar is required to run a backtest.", nameof(bars));
         }
 
-        var window = new Queue<PricePoint>();
+        var window = new Queue<Candle>();
         var netQuantity = 0;
         var averageEntryPrice = 0m;
         var totalRealizedPnL = 0m;
@@ -56,7 +56,9 @@ public static class BacktestEngine
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            window.Enqueue(new PricePoint(bar.TimestampUtc, bar.Close));
+            // Real OHLCV passed straight through - this is where Kronos actually gets genuine
+            // candles to forecast from (the live path can't yet, see Candle).
+            window.Enqueue(new Candle(bar.TimestampUtc, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume));
             while (window.Count > config.LookbackSamples)
             {
                 window.Dequeue();

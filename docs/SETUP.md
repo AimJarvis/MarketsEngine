@@ -55,31 +55,38 @@ to clear a leftover background process, then re-run.
 
 ## 4. Kronos forecasting service (optional — only needed for `Strategy:ActiveStrategy = "Kronos"`)
 
-Kronos lives in a sibling repo: `../Kronos` (cloned from `shiyu-coder/Kronos`). It's a general
-OHLCV candlestick-forecasting ML model, **not** a trading strategy by itself — the
-buy/no-buy decision logic is MarketsEngine's own `KronosStrategy`.
+The forecast service wrapper now lives **in this repo** at `kronos-service/` (version-controlled
+with everything else). The Kronos **model** itself is a large third-party ML repo and stays an
+external dependency — clone it separately (`../Kronos` from `shiyu-coder/Kronos`); the service finds
+it via `KRONOS_REPO_PATH` (defaults to a sibling `../Kronos` checkout). It's a general OHLCV
+candlestick-forecasting model, **not** a trading strategy by itself — the buy/no-buy decision logic
+is MarketsEngine's own `KronosStrategy`.
 
 ```bash
-cd ../Kronos
-source .venv/bin/activate   # one-time: python -m venv .venv && pip install -r requirements.txt (+ fastapi, uvicorn)
-python -m uvicorn app:app --host 0.0.0.0 --port 8000 --app-dir service
+# one-time: clone the model repo + its venv (see kronos-service/README.md for full detail)
+git clone https://github.com/shiyu-coder/Kronos.git ../Kronos
+cd ../Kronos && python -m venv .venv && .venv/bin/pip install -r requirements.txt fastapi uvicorn
+
+# run the service from this repo, using the Kronos venv:
+cd kronos-service
+../../Kronos/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 First run downloads model weights (`Kronos-small` + `Kronos-Tokenizer-base`, ~tens of MB) from
 Hugging Face — needs network access.
 
-Known gotchas if you ever need to rebuild this service:
+Known gotchas:
 - On Apple Silicon, the model **must** run on `device="cpu"` — MPS's
   `scaled_dot_product_attention` doesn't support dropout, which Kronos's attention layers use, and
   `KronosPredictor` auto-detecting `device="mps"` crashes.
-- Only single last-traded-price samples are available (not real OHLC bars), so the service
-  synthesizes flat candles (open=high=low=close=price, volume=0) — a real limitation worth
-  remembering if forecast quality ever looks off.
+- The service uses exactly the OHLCV + timestamps it's sent (no fabrication). Backtests feed it real
+  `HistoricalBar` OHLCV; the live path currently feeds degenerate single-price candles until
+  tick→bar aggregation exists (see `docs/TODO.md`).
 - `pip install` inside a sandboxed shell may fail with DNS errors even though `curl`/`git` work —
   that's a sandbox quirk blocking Python's own network stack, not a real connectivity problem.
 
-Once running, set `Strategy:KronosServiceUrl = "http://localhost:8000"` and
-`Strategy:ActiveStrategy = "Kronos"`.
+Once running, set `Strategy:KronosServiceUrl = "http://localhost:8000"` (e.g.
+`Strategy__KronosServiceUrl` in `.env`) and `Strategy:ActiveStrategy = "Kronos"`.
 
 ## 5. Twilio WhatsApp alerts (optional — only needed for `PnLAlerts:Enabled = true`)
 

@@ -232,6 +232,27 @@ a known, explicit gap. Update it whenever a major piece changes state — don't 
     `OrderId` (`.First()`) instead of a plain `ToDictionary`, which would have crashed the whole
     reconciliation pass on an unexpected duplicate key.
 
+- **Kronos now receives real OHLCV candles (2026-10-31) — and ran its first real forecast-driven
+  backtest.** Previously the strategy pipeline carried price-only `PricePoint`s and the Python
+  service *fabricated* flat candles (`open=high=low=close=price, volume=0`) plus minute-spaced
+  timestamps, feeding an OHLCV forecasting model exactly the structure it was built to use stripped
+  out. Replaced `PricePoint` with a real `Candle` (OHLCV + timestamp) throughout: the backtest path
+  now passes genuine `HistoricalBar` OHLCV straight through, `KronosStrategy` sends full OHLCV + real
+  unix timestamps, and the service uses them directly (no fabrication; infers forward-bar spacing
+  from the real cadence instead of hardcoding minutes). **Verified end-to-end**: started the Kronos
+  Python service, ran a real Kronos backtest on real RELIANCE daily OHLCV - 14 forecasts served
+  (all 200 OK, no errors), 3 trades produced, and each trade's take-profit/stop-loss came out
+  *different* (2.25%/1.13%, 0.68%/0.34%, …), proving the forecast-magnitude-scaled exits work with
+  real Kronos forecasts, not just the flat config default. (The result lost money on this 18-bar
+  sample - expected and meaningless at that size; the point verified here is the pipeline, not an
+  edge.) `SimpleMomentum` backtest produced byte-identical numbers before and after the refactor,
+  confirming it's behavior-preserving for the close-only strategy.
+  **Known remaining limitation, flagged not hidden**: the LIVE strategy runner still has no real
+  intraday OHLC bars - it only has point-in-time quote snapshots, which it now wraps as *degenerate*
+  candles (`Candle.FromPrice`, O=H=L=C=LTP, V=0). So live Kronos still gets degraded input; real
+  intraday forecasting needs a tick→OHLCV bar aggregator (see `docs/TODO.md`). This is fine for now
+  because Kronos must be proven in backtest (real candles) before it's trusted live anyway.
+
 ## ⚠️ Built, but not fully verified
 
 - ~~**Kite Connect real market data**~~ / ~~**Historical data import**~~ — **done (2026-10-31)**,

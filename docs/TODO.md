@@ -107,6 +107,13 @@ left on, watch logs closely for several sessions before considering any further 
   `PnLAlertService` and logs an error (plus a best-effort WhatsApp alert if Twilio is configured)
   if any goes stale well beyond its expected interval — distinguishing "crashed" from "just
   disabled."
+- [ ] **Live real-time OHLCV bar aggregation for Kronos.** The backtest path now feeds Kronos real
+  `HistoricalBar` OHLCV (done 2026-10-31), but the live strategy runner only has point-in-time quote
+  snapshots, which it wraps as degenerate candles (`Candle.FromPrice`, O=H=L=C=LTP, V=0) — so live
+  Kronos still gets degraded input. Needs a tick→OHLCV aggregator: accumulate the ticker's stream
+  into time-bucketed bars (first=open, max=high, min=low, last=close, sum=volume) per instrument and
+  feed those to the runner instead of the latest-quote snapshot. Only worth building once Kronos has
+  proven an edge in backtest — don't build it speculatively.
 - [ ] No frontend/dashboard — everything is curl/Swagger. Fine for development, not fine for daily
   operation if this ever runs unattended.
 - [ ] **No alert when the Kite session goes stale.** Kite access tokens expire once per day with no

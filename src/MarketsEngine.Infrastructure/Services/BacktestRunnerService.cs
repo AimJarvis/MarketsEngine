@@ -43,7 +43,7 @@ public class BacktestRunnerService(MarketsEngineDbContext dbContext, IServicePro
         };
 
         var backtestBars = bars
-            .Select(b => new BacktestBar(b.TimestampUtc, b.Open, b.High, b.Low, b.Close))
+            .Select(b => new BacktestBar(b.TimestampUtc, b.Open, b.High, b.Low, b.Close, b.Volume))
             .ToList();
 
         var config = new BacktestConfig(

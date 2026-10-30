@@ -14,13 +14,15 @@ public class SimpleMomentumStrategy(decimal thresholdPercent) : IStrategy
 {
     public Task<StrategySignal> EvaluateAsync(StrategyContext context, CancellationToken cancellationToken = default)
     {
-        if (context.RecentPrices.Count < 2)
+        if (context.RecentCandles.Count < 2)
         {
             return Task.FromResult(StrategySignal.None);
         }
 
-        var oldest = context.RecentPrices[0].Price;
-        var newest = context.RecentPrices[^1].Price;
+        // Close-only: this strategy's momentum signal doesn't use intrabar range or volume, so it
+        // behaves identically on real backtest candles and on the live path's degenerate candles.
+        var oldest = context.RecentCandles[0].Close;
+        var newest = context.RecentCandles[^1].Close;
 
         if (oldest <= 0)
         {

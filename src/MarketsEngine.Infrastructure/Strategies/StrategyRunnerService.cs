@@ -39,7 +39,9 @@ public class StrategyRunnerService(
     HealthStatusTracker healthTracker,
     ILogger<StrategyRunnerService> logger) : BackgroundService
 {
-    private readonly Dictionary<Guid, Queue<PricePoint>> _priceHistory = new();
+    // Degenerate candles (O=H=L=C=LTP, V=0) built from quote snapshots - the live path has no real
+    // intraday OHLC bars. Fine for close-only strategies; does not give Kronos real bars live (see Candle).
+    private readonly Dictionary<Guid, Queue<Candle>> _priceHistory = new();
     private readonly Dictionary<Guid, DateTime> _lastExitAtUtc = new();
     private readonly Lock _historyLock = new();
 
@@ -148,8 +150,8 @@ public class StrategyRunnerService(
                         .Take(settings.LookbackSamples)
                         .ToListAsync(cancellationToken);
 
-                    var seeded = new Queue<PricePoint>(
-                        seedQuotes.OrderBy(q => q.QuotedAtUtc).Select(q => new PricePoint(q.QuotedAtUtc, q.LastTradedPrice)));
+                    var seeded = new Queue<Candle>(
+                        seedQuotes.OrderBy(q => q.QuotedAtUtc).Select(q => Candle.FromPrice(q.QuotedAtUtc, q.LastTradedPrice)));
 
                     lock (_historyLock)
                     {
@@ -160,16 +162,16 @@ public class StrategyRunnerService(
                     }
                 }
 
-                PricePoint[] windowSnapshot;
+                Candle[] windowSnapshot;
                 lock (_historyLock)
                 {
                     var history = _priceHistory.TryGetValue(instrument.Id, out var existing)
                         ? existing
-                        : _priceHistory[instrument.Id] = new Queue<PricePoint>();
+                        : _priceHistory[instrument.Id] = new Queue<Candle>();
 
                     if (history.Count == 0 || history.Last().TimestampUtc != latestQuote.QuotedAtUtc)
                     {
-                        history.Enqueue(new PricePoint(latestQuote.QuotedAtUtc, latestQuote.LastTradedPrice));
+                        history.Enqueue(Candle.FromPrice(latestQuote.QuotedAtUtc, latestQuote.LastTradedPrice));
                     }
 
                     while (history.Count > settings.LookbackSamples)

@@ -21,13 +21,25 @@ public class KronosStrategy(HttpClient httpClient, StrategySettings settings) : 
                 "Strategy:KronosServiceUrl is not configured. Set it in appsettings.json, e.g. \"http://localhost:8000\".");
         }
 
-        if (context.RecentPrices.Count < 2)
+        if (context.RecentCandles.Count < 2)
         {
             return StrategySignal.None;
         }
 
+        // Send full OHLCV - Kronos is an OHLCV model and forecasts best with real intrabar range
+        // and volume. In backtest these are real HistoricalBar candles; on the live quote-snapshot
+        // path they are currently degenerate (O=H=L=C=LTP, V=0), which degrades the forecast until
+        // real-time bar aggregation exists (see Candle / docs/TODO.md).
+        var candles = context.RecentCandles;
         var request = new KronosForecastRequest(
-            context.RecentPrices.Select(p => p.Price).ToArray(),
+            candles.Select(c => c.Open).ToArray(),
+            candles.Select(c => c.High).ToArray(),
+            candles.Select(c => c.Low).ToArray(),
+            candles.Select(c => c.Close).ToArray(),
+            candles.Select(c => c.Volume).ToArray(),
+            // Real bar timestamps (unix seconds, UTC) so Kronos's time features reflect the true
+            // cadence (daily vs. intraday) instead of the service guessing minute spacing.
+            candles.Select(c => new DateTimeOffset(DateTime.SpecifyKind(c.TimestampUtc, DateTimeKind.Utc)).ToUnixTimeSeconds()).ToArray(),
             settings.KronosForecastHorizon);
 
         var response = await httpClient.PostAsJsonAsync("/forecast", request, cancellationToken);
@@ -41,7 +53,7 @@ public class KronosStrategy(HttpClient httpClient, StrategySettings settings) : 
             return StrategySignal.None;
         }
 
-        var currentPrice = context.RecentPrices[^1].Price;
+        var currentPrice = candles[^1].Close;
         var predictedPrice = forecast.ForecastPrices[^1];
 
         if (currentPrice <= 0)
@@ -69,6 +81,8 @@ public class KronosStrategy(HttpClient httpClient, StrategySettings settings) : 
             TakeProfitPercent: takeProfitPercent);
     }
 
-    private record KronosForecastRequest(decimal[] Prices, int Horizon);
+    private record KronosForecastRequest(
+        decimal[] Open, decimal[] High, decimal[] Low, decimal[] Close, decimal[] Volume,
+        long[] Timestamps, int Horizon);
     private record KronosForecastResponse(decimal[] ForecastPrices);
 }
